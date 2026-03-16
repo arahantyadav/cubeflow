@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>CubeFlow</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'DM Sans',sans-serif}button{font-family:inherit}input[type="range"]{cursor:pointer}</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head><body><div id="root"></div><script>
+var useState=React.useState,useEffect=React.useEffect,useRef=React.useRef,useMemo=React.useMemo,useCallback=React.useCallback;
+
+/* ══════════════════════════════════════════════════════════════
+   CUBE ENGINE — DO NOT MODIFY THIS SECTION
+   Permanent-color cubies, physical 3D rotation, quaternion snap
+══════════════════════════════════════════════════════════════ */
+var GC = {W:"#F0EDE8",Y:"#FFD500",G:"#00A14B",B:"#0051BA",O:"#FF5900",R:"#C8102E"};
+var AX=["R","L","U","D","F","B"],MD=["","'","2"],OP={R:"L",L:"R",U:"D",D:"U",F:"B",B:"F"};
+function genScr(n,eventKey){if(typeof n==="string"){eventKey=n;n=null;}eventKey=eventKey||"3x3";n=n|| (eventKey==="2x2"?10:20);var s=[],a="",b="";for(var i=0;i<n;i++){var m;do{m=AX[Math.floor(Math.random()*6)];}while(m===a||(m===b&&OP[m]===a));s.push(m+MD[Math.floor(Math.random()*3)]);b=a;a=m;}return s;}
+
+var SZ=0.86,GAP=0.14,PT=SZ+GAP,STICKER_INSET=0.07,STICKER_DEPTH=0.02;
+function solvedStickerColor(face){var map={U:"W",D:"Y",F:"G",B:"B",R:"R",L:"O"};return map[face];}
+
+function getMoveAxisAngle(move){
+  var base=move[0],mod=move.slice(1),turns=mod==="2"?2:1,dir=mod==="'"?-1:1;
+  var angle=(Math.PI/2)*turns*dir,axisVec,coord;
+  if(base==="R"){axisVec=[1,0,0];coord="x";}else if(base==="L"){axisVec=[-1,0,0];coord="x";}
+  else if(base==="U"){axisVec=[0,1,0];coord="y";}else if(base==="D"){axisVec=[0,-1,0];coord="y";}
+  else if(base==="F"){axisVec=[0,0,1];coord="z";}else if(base==="B"){axisVec=[0,0,-1];coord="z";}
+  else return null;
+  var layerVal=(base==="R"||base==="U"||base==="F")?1:-1;
+  var rotAngle=-angle;
+  return{axis:new THREE.Vector3(axisVec[0],axisVec[1],axisVec[2]),angle:rotAngle,coord:coord,layerVal:layerVal};
+}
+function snap(v){return Math.round(v);}
+function snapQuat(q){
+  var vals=[0,0.5,-0.5,Math.SQRT1_2,-Math.SQRT1_2,1,-1];
+  function nearest(v){var best=vals[0],bestD=Math.abs(v-vals[0]);for(var i=1;i<vals.length;i++){var d=Math.abs(v-vals[i]);if(d<bestD){bestD=d;best=vals[i];}}return best;}
+  q.x=nearest(q.x);q.y=nearest(q.y);q.z=nearest(q.z);q.w=nearest(q.w);q.normalize();
+}
+
+function ThreeCube(props){
+  var animRequest=props.animRequest,jumpToMoves=props.jumpToMoves,jumpVersion=props.jumpVersion,cubeType=props.cubeType||"3x3";
+  var mountRef=useRef(null),sceneRef=useRef(null),rendRef=useRef(null),camRef=useRef(null),cubiesRef=useRef([]),rafRef=useRef(null),animatingRef=useRef(false),builtRef=useRef(false);
+  var coords=cubeType==="2x2"?[-1,1]:[-1,0,1];
+  var posStep=cubeType==="2x2"?PT/2:PT;
+
+  useEffect(function(){
+    var el=mountRef.current;if(!el)return;
+    var scene=new THREE.Scene();var cam=new THREE.PerspectiveCamera(42,1,0.1,100);cam.position.set(4,3,4);cam.lookAt(0,0,0);
+    var ren=new THREE.WebGLRenderer({antialias:true,alpha:true});var sz=Math.min(el.clientWidth,360)||300;ren.setSize(sz,sz);ren.setPixelRatio(Math.min(window.devicePixelRatio,2));ren.setClearColor(0x000000,0);el.innerHTML="";el.appendChild(ren.domElement);
+    scene.add(new THREE.AmbientLight(0xffffff,0.55));var d1=new THREE.DirectionalLight(0xffffff,0.85);d1.position.set(5,10,7);scene.add(d1);var d2=new THREE.DirectionalLight(0x99aacc,0.3);d2.position.set(-4,-2,5);scene.add(d2);
+    var bodyGeo=new THREE.BoxGeometry(SZ,SZ,SZ),stickerGeo=new THREE.PlaneGeometry(SZ-STICKER_INSET*2,SZ-STICKER_INSET*2),cubies=[];
+    for(var xi=0;xi<coords.length;xi++)for(var yi=0;yi<coords.length;yi++)for(var zi=0;zi<coords.length;zi++){
+      var x=coords[xi],y=coords[yi],z=coords[zi];
+      var grp=new THREE.Group();grp.userData={gx:x,gy:y,gz:z,hx:x,hy:y,hz:z};
+      grp.add(new THREE.Mesh(bodyGeo,new THREE.MeshStandardMaterial({color:0x151515,roughness:0.35,metalness:0.05})));
+      var off=SZ/2+STICKER_DEPTH;
+      if(y===1){var m1=new THREE.Mesh(stickerGeo,new THREE.MeshStandardMaterial({color:GC[solvedStickerColor("U")],roughness:0.1,metalness:0.02}));m1.rotation.x=-Math.PI/2;m1.position.y=off;grp.add(m1);}
+      if(y===-1){var m2=new THREE.Mesh(stickerGeo,new THREE.MeshStandardMaterial({color:GC[solvedStickerColor("D")],roughness:0.1,metalness:0.02}));m2.rotation.x=Math.PI/2;m2.position.y=-off;grp.add(m2);}
+      if(z===1){var m3=new THREE.Mesh(stickerGeo,new THREE.MeshStandardMaterial({color:GC[solvedStickerColor("F")],roughness:0.1,metalness:0.02}));m3.position.z=off;grp.add(m3);}
+      if(z===-1){var m4=new THREE.Mesh(stickerGeo,new THREE.MeshStandardMaterial({color:GC[solvedStickerColor("B")],roughness:0.1,metalness:0.02}));m4.rotation.y=Math.PI;m4.position.z=-off;grp.add(m4);}
+      if(x===1){var m5=new THREE.Mesh(stickerGeo,new THREE.MeshStandardMaterial({color:GC[solvedStickerColor("R")],roughness:0.1,metalness:0.02}));m5.rotation.y=Math.PI/2;m5.position.x=off;grp.add(m5);}
+      if(x===-1){var m6=new THREE.Mesh(stickerGeo,new THREE.MeshStandardMaterial({color:GC[solvedStickerColor("L")],roughness:0.1,metalness:0.02}));m6.rotation.y=-Math.PI/2;m6.position.x=-off;grp.add(m6);}
+      grp.position.set(x*posStep,y*posStep,z*posStep);scene.add(grp);cubies.push(grp);
+    }
+    sceneRef.current=scene;rendRef.current=ren;camRef.current=cam;cubiesRef.current=cubies;builtRef.current=true;ren.render(scene,cam);
+    return function(){if(rafRef.current)cancelAnimationFrame(rafRef.current);ren.dispose();};
+  },[cubeType]);
+
+  function applyMoveInstant(cubies,move){var info=getMoveAxisAngle(move);if(!info)return;var affected=cubies.filter(function(c){if(info.coord==="x")return c.userData.gx===info.layerVal;if(info.coord==="y")return c.userData.gy===info.layerVal;return c.userData.gz===info.layerVal;});for(var i=0;i<affected.length;i++){var c=affected[i];var pos=new THREE.Vector3(c.position.x,c.position.y,c.position.z);pos.applyAxisAngle(info.axis,info.angle);c.position.set(snap(pos.x/posStep)*posStep,snap(pos.y/posStep)*posStep,snap(pos.z/posStep)*posStep);c.rotateOnWorldAxis(info.axis,info.angle);snapQuat(c.quaternion);c.userData.gx=snap(c.position.x/posStep);c.userData.gy=snap(c.position.y/posStep);c.userData.gz=snap(c.position.z/posStep);}}
+
+  function resetAndApply(cubies,moves){for(var i=0;i<cubies.length;i++){var c=cubies[i];c.position.set(c.userData.hx*posStep,c.userData.hy*posStep,c.userData.hz*posStep);c.quaternion.set(0,0,0,1);c.userData.gx=c.userData.hx;c.userData.gy=c.userData.hy;c.userData.gz=c.userData.hz;}if(moves){for(var j=0;j<moves.length;j++)applyMoveInstant(cubies,moves[j]);}}
+
+  useEffect(function(){if(!builtRef.current||animatingRef.current)return;var cubies=cubiesRef.current,ren=rendRef.current,scene=sceneRef.current,cam=camRef.current;if(!cubies.length||!ren)return;resetAndApply(cubies,jumpToMoves||[]);ren.render(scene,cam);},[jumpVersion,cubeType]);
+
+  useEffect(function(){
+    if(!animRequest||!builtRef.current)return;var cubies=cubiesRef.current,scene=sceneRef.current,ren=rendRef.current,cam=camRef.current;if(!cubies.length||!scene||!ren||!cam)return;
+    var info=getMoveAxisAngle(animRequest.move);if(!info){if(animRequest.onDone)animRequest.onDone();return;}
+    var affected=cubies.filter(function(c){if(info.coord==="x")return c.userData.gx===info.layerVal;if(info.coord==="y")return c.userData.gy===info.layerVal;return c.userData.gz===info.layerVal;});
+    var pivot=new THREE.Group();scene.add(pivot);for(var i=0;i<affected.length;i++){scene.remove(affected[i]);pivot.add(affected[i]);}
+    animatingRef.current=true;var duration=Math.max((animRequest.speed||0.4)*500,50),t0=performance.now(),totalAngle=info.angle;
+    function tick(now){var raw=Math.min((now-t0)/duration,1);var e=raw<0.5?4*raw*raw*raw:1-Math.pow(-2*raw+2,3)/2;pivot.setRotationFromAxisAngle(info.axis,totalAngle*e);ren.render(scene,cam);
+      if(raw<1){rafRef.current=requestAnimationFrame(tick);}else{pivot.setRotationFromAxisAngle(info.axis,totalAngle);for(var j=0;j<affected.length;j++){var c=affected[j];var wp=new THREE.Vector3();c.getWorldPosition(wp);var wq=new THREE.Quaternion();c.getWorldQuaternion(wq);pivot.remove(c);scene.add(c);c.position.set(snap(wp.x/posStep)*posStep,snap(wp.y/posStep)*posStep,snap(wp.z/posStep)*posStep);c.quaternion.copy(wq);snapQuat(c.quaternion);c.userData.gx=snap(wp.x/posStep);c.userData.gy=snap(wp.y/posStep);c.userData.gz=snap(wp.z/posStep);}scene.remove(pivot);ren.render(scene,cam);animatingRef.current=false;if(animRequest.onDone)animRequest.onDone();}}
+    rafRef.current=requestAnimationFrame(tick);return function(){if(rafRef.current)cancelAnimationFrame(rafRef.current);};
+  },[animRequest,cubeType]);
+  return React.createElement("div",{ref:mountRef,style:{width:"100%",maxWidth:360,aspectRatio:"1",margin:"0 auto"}});
+}
+
+function ScramblePlayer(props){
+  var scramble=props.scramble,speed=props.speed,onStepChange=props.onStepChange,cubeType=props.cubeType||"3x3";
+  var _step=useState(0),step=_step[0],setStep=_step[1];
+  var _playing=useState(false),playing=_playing[0],setPlaying=_playing[1];
+  var _animReq=useState(null),animReq=_animReq[0],setAnimReq=_animReq[1];
+  var _jumpVer=useState(0),jumpVer=_jumpVer[0],setJumpVer=_jumpVer[1];
+  var _jumpMoves=useState([]),jumpMoves=_jumpMoves[0],setJumpMoves=_jumpMoves[1];
+  var playRef=useRef(false),stepRef=useRef(0);
+  useEffect(function(){playRef.current=playing;},[playing]);
+  useEffect(function(){stepRef.current=step;if(onStepChange)onStepChange(step);},[step]);
+  useEffect(function(){setStep(0);setPlaying(false);setAnimReq(null);setJumpMoves([]);setJumpVer(function(v){return v+1;});},[scramble]);
+
+  var doAnimStep=useCallback(function(){
+    var cur=stepRef.current;
+    if(cur>=scramble.length){setPlaying(false);return;}
+    var move=scramble[cur];
+    setStep(cur+1);
+    setAnimReq({move:move,speed:speed,onDone:function(){
+      setAnimReq(null);
+      // Do NOT call doAnimStep here — the useEffect below handles chaining
+    }});
+  },[scramble,speed]);
+
+  // This effect chains animations: when playing and animReq clears, start next
+  useEffect(function(){
+    if(!playing||animReq)return;
+    // Small delay to let React settle
+    var t=setTimeout(function(){
+      if(playRef.current)doAnimStep();
+    },15);
+    return function(){clearTimeout(t);};
+  },[playing,animReq,doAnimStep]);
+
+  var jumpTo=function(n){
+    setPlaying(false);setAnimReq(null);setStep(n);
+    setJumpMoves(scramble.slice(0,n));
+    setJumpVer(function(v){return v+1;});
+  };
+  var goStart=function(){jumpTo(0);};
+  var goEnd=function(){jumpTo(scramble.length);};
+  var stepBack=function(){if(animReq||step<=0)return;jumpTo(step-1);};
+  var stepFwd=function(){
+    if(animReq||step>=scramble.length)return;
+    var move=scramble[step];
+    setStep(step+1);
+    setAnimReq({move:move,speed:speed,onDone:function(){setAnimReq(null);}});
+  };
+  var togglePlay=function(){
+    if(step>=scramble.length){jumpTo(0);setTimeout(function(){setPlaying(true);},60);}
+    else setPlaying(function(p){return!p;});
+  };
+
+  var notation=scramble.map(function(m,i){var isDone=i<step,isCur=(i===step-1)&&step>0;return React.createElement("span",{key:i,style:{padding:"3px 8px",borderRadius:6,fontWeight:600,transition:"all .15s",color:isCur?"#fff":isDone?"var(--ab)":"var(--tm)",background:isCur?"var(--ab)":isDone?"var(--abd)":"transparent"}},m);});
+  var mkBtn=function(label,onClick,primary){return React.createElement("button",{onClick:onClick,style:{width:44,height:44,borderRadius:12,border:primary?"none":"1.5px solid var(--bd)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",background:primary?"var(--ab)":"var(--s2)",color:primary?"#fff":"var(--tp)",fontSize:16,fontWeight:600,transition:"all .15s",boxShadow:primary?"0 2px 8px rgba(77,124,255,0.3)":"none"}},label);};
+
+  return React.createElement("div",{style:{padding:20}},
+    React.createElement("div",{style:{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:5,marginBottom:18,padding:"12px 16px",borderRadius:12,background:"var(--s2)",fontFamily:"'JetBrains Mono',monospace",fontSize:14}},notation),
+    React.createElement(ThreeCube,{jumpToMoves:jumpMoves,jumpVersion:jumpVer,animRequest:animReq,cubeType:cubeType}),
+    React.createElement("div",{style:{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginTop:16}},mkBtn("\u23EE",goStart),mkBtn("\u25C0",stepBack),mkBtn(playing?"\u23F8":"\u25B6",togglePlay,true),mkBtn("\u25B6",stepFwd),mkBtn("\u23ED",goEnd)),
+    React.createElement("div",{style:{textAlign:"center",marginTop:8,fontSize:12,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace"}},step+" / "+scramble.length));
+}
+/* ══════════════════════════════════════════════════════════════
+   END CUBE ENGINE
+══════════════════════════════════════════════════════════════ */
+
+/* ── STATS ── */
+function aoN(sv,n){if(sv.length<n)return null;var l=sv.slice(-n),d=0,t=[];for(var i=0;i<l.length;i++){if(l[i].p==="DNF")d++;else t.push(l[i].t+(l[i].p==="+2"?2000:0));}if(d>1)return"DNF";t.sort(function(a,b){return a-b;});if(d===0&&t.length>2){var s=0;for(var j=1;j<t.length-1;j++)s+=t[j];return s/(t.length-2);}return t.length>1?t.slice(1).reduce(function(a,b){return a+b;},0)/(t.length-1):t[0]||null;}
+function bst(sv){var mn=Infinity;for(var i=0;i<sv.length;i++){if(sv[i].p!=="DNF"){var v=sv[i].t+(sv[i].p==="+2"?2000:0);if(v<mn)mn=v;}}return mn===Infinity?null:mn;}
+function tf(ms){if(ms==null)return"\u2013";if(ms==="DNF")return"DNF";var s=ms/1000,m=Math.floor(s/60),r=s%60;return m>0?m+":"+r.toFixed(2).padStart(5,"0"):r.toFixed(2);}
+
+/* ── SOLVE RESULT ── */
+function SolveResult(props){
+  var time=props.time,onNext=props.onNext,sec=time/1000;var emoji,filled,label,bgGrad;
+  if(sec<=10){emoji="\u{1F406}";filled=3;label="Lightning Fast!";bgGrad="linear-gradient(135deg,#FFD700,#FFA000)";}
+  else if(sec<=30){emoji="\u{1F40E}";filled=2;label="Great Speed!";bgGrad="linear-gradient(135deg,#C0C0C0,#9E9E9E)";}
+  else if(sec<=50){emoji="\u{1F98C}";filled=1;label="Solid Solve!";bgGrad="linear-gradient(135deg,#CD7F32,#A0522D)";}
+  else{emoji=null;filled=0;label="Nice solve!";bgGrad="linear-gradient(135deg,var(--ab),#7c5cff)";}
+  var stars=[];if(emoji){for(var i=0;i<3;i++)stars.push(React.createElement("span",{key:i,style:{color:i<filled?"#FFD700":"var(--tm)",display:"inline-block",animation:i<filled?"starPop 0.4s ease "+i*0.15+"s both":"none",textShadow:i<filled?"0 0 12px rgba(255,215,0,0.5)":"none"}},i<filled?"\u2605":"\u2606"));}
+  return React.createElement("div",{style:{textAlign:"center",padding:"40px 20px",animation:"fadeUp 0.5s ease"}},
+    React.createElement("style",null,"@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}@keyframes bounce{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}@keyframes starPop{0%{transform:scale(0)}50%{transform:scale(1.3)}100%{transform:scale(1)}}"),
+    stars.length>0&&React.createElement("div",{style:{fontSize:36,marginBottom:12,letterSpacing:8}},stars),
+    emoji&&React.createElement("div",{style:{fontSize:80,marginBottom:16,animation:"bounce 1s ease infinite"}},emoji),
+    React.createElement("div",{style:{fontFamily:"'JetBrains Mono',monospace",fontSize:"clamp(42px,12vw,64px)",fontWeight:700,background:bgGrad,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:8}},tf(time)),
+    React.createElement("div",{style:{fontSize:emoji?22:28,fontWeight:700,color:"var(--tp)",marginBottom:32}},label),
+    React.createElement("button",{onClick:onNext,style:{padding:"14px 40px",borderRadius:12,border:"none",fontSize:16,fontWeight:700,cursor:"pointer",background:"var(--ab)",color:"#fff"}},"Next Solve \u2192"));
+}
+/* ── WORLD RECORDS ── */
+function faceIcon(n, sz) {
+  sz = sz || 32;
+  var pad = 2;
+  var cell = (sz - pad * 2) / n;
+  var g = Math.max(0.8, 1.5 - n * 0.1);
+  var colors = ["#F0EDE8","#FFD500","#00A14B","#C8102E","#FF5900","#0051BA"];
+  var els = [];
+  for (var r = 0; r < n; r++) for (var c = 0; c < n; c++) {
+    els.push(React.createElement("rect",{key:r+"-"+c,x:pad+c*cell+g/2,y:pad+r*cell+g/2,width:cell-g,height:cell-g,fill:colors[(r*n+c)%6],rx:Math.max(1,2-n*0.15)}));
+  }
+  return React.createElement("svg",{width:sz,height:sz,viewBox:"0 0 "+sz+" "+sz,style:{display:"block",flexShrink:0,borderRadius:4,background:"#151515"}},els);
+}
+
+function puzzleIcon(type) {
+  if (type==="2x2x2") return faceIcon(2,32);
+  if (type==="3x3x3"||type==="3x3 OH"||type==="3x3 BLD") return faceIcon(3,32);
+  if (type==="4x4x4") return faceIcon(4,32);
+  if (type==="5x5x5") return faceIcon(5,32);
+  if (type==="6x6x6") return faceIcon(6,32);
+  if (type==="7x7x7") return faceIcon(7,34);
+  if (type==="Pyraminx") {
+    // Pyraminx face: 9 triangles (scrambled colors)
+    var pe=[],s2=34,midX=s2/2,topY=3,botY=s2-2;
+    var th=botY-topY, rh=th/3;
+    // Scrambled: mix of all 4 pyraminx face colors
+    var cols=["#C8102E","#0051BA","#FFD500","#00A14B","#C8102E","#FFD500","#0051BA","#00A14B","#C8102E"];
+    var ci=0;
+    for(var rw=0;rw<3;rw++){
+      var y0=topY+rw*rh, y1=y0+rh;
+      var numUp=rw+1, numDown=rw;
+      var rowHalfW=(rw+1)*rh*0.577;
+      var cellW=rh*1.155;
+      var startX=midX-rowHalfW;
+      for(var u=0;u<numUp;u++){
+        var lx2=startX+u*cellW;
+        pe.push(React.createElement("polygon",{key:"u"+ci,points:(lx2+cellW/2).toFixed(1)+","+y0.toFixed(1)+" "+(lx2+cellW).toFixed(1)+","+y1.toFixed(1)+" "+lx2.toFixed(1)+","+y1.toFixed(1),fill:cols[ci%9],stroke:"#111",strokeWidth:0.7}));
+        ci++;
+      }
+      for(var d=0;d<numDown;d++){
+        var dlx=startX+(d+0.5)*cellW;
+        pe.push(React.createElement("polygon",{key:"d"+ci,points:(dlx+cellW/2).toFixed(1)+","+y1.toFixed(1)+" "+(dlx+cellW).toFixed(1)+","+y0.toFixed(1)+" "+dlx.toFixed(1)+","+y0.toFixed(1),fill:cols[ci%9],stroke:"#111",strokeWidth:0.7}));
+        ci++;
+      }
+    }
+    return React.createElement("svg",{width:s2,height:s2,viewBox:"0 0 "+s2+" "+s2,style:{display:"block",flexShrink:0}},pe);
+  }
+  if (type==="Megaminx") {
+    // Megaminx: pentagon face with 5 colored edge trapezoids + white center
+    var me2=[],sz3=34,cx3=sz3/2,cy3=sz3/2+1,R=14,r2=6;
+    var mColors=["#00A14B","#C8102E","#FFD500","#0051BA","#FF5900"];
+    var outerPts=[];
+    for(var i2=0;i2<5;i2++){var a0=((i2*72)-90)*Math.PI/180;outerPts.push((cx3+R*Math.cos(a0)).toFixed(1)+","+(cy3+R*Math.sin(a0)).toFixed(1));}
+    me2.push(React.createElement("polygon",{key:"bg",points:outerPts.join(" "),fill:"#151515",stroke:"#444",strokeWidth:1}));
+    for(var j2=0;j2<5;j2++){
+      var a1=((j2*72)-90)*Math.PI/180, a2c=(((j2+1)%5*72)-90)*Math.PI/180;
+      me2.push(React.createElement("polygon",{key:"e"+j2,points:
+        (cx3+R*Math.cos(a1)).toFixed(1)+","+(cy3+R*Math.sin(a1)).toFixed(1)+" "+
+        (cx3+R*Math.cos(a2c)).toFixed(1)+","+(cy3+R*Math.sin(a2c)).toFixed(1)+" "+
+        (cx3+r2*Math.cos(a2c)).toFixed(1)+","+(cy3+r2*Math.sin(a2c)).toFixed(1)+" "+
+        (cx3+r2*Math.cos(a1)).toFixed(1)+","+(cy3+r2*Math.sin(a1)).toFixed(1),
+        fill:mColors[j2],stroke:"#111",strokeWidth:0.6}));
+    }
+    var innerPts=[];
+    for(var k2=0;k2<5;k2++){var a3=((k2*72)-90)*Math.PI/180;innerPts.push((cx3+r2*Math.cos(a3)).toFixed(1)+","+(cy3+r2*Math.sin(a3)).toFixed(1));}
+    me2.push(React.createElement("polygon",{key:"ctr",points:innerPts.join(" "),fill:"#F0EDE8",stroke:"#111",strokeWidth:0.6}));
+    return React.createElement("svg",{width:sz3,height:sz3,viewBox:"0 0 "+sz3+" "+sz3,style:{display:"block",flexShrink:0}},me2);
+  }
+  if (type==="Skewb") {
+    var sk=[],sz4=32,c2=sz4/2,p2=3;
+    sk.push(React.createElement("rect",{key:"bg",x:p2,y:p2,width:sz4-p2*2,height:sz4-p2*2,rx:2,fill:"#151515"}));
+    sk.push(React.createElement("polygon",{key:"tl",points:p2+","+p2+" "+c2+","+p2+" "+p2+","+c2,fill:"#F0EDE8",stroke:"#111",strokeWidth:0.7}));
+    sk.push(React.createElement("polygon",{key:"tr",points:c2+","+p2+" "+(sz4-p2)+","+p2+" "+(sz4-p2)+","+c2,fill:"#C8102E",stroke:"#111",strokeWidth:0.7}));
+    sk.push(React.createElement("polygon",{key:"bl",points:p2+","+c2+" "+p2+","+(sz4-p2)+" "+c2+","+(sz4-p2),fill:"#00A14B",stroke:"#111",strokeWidth:0.7}));
+    sk.push(React.createElement("polygon",{key:"br",points:(sz4-p2)+","+c2+" "+(sz4-p2)+","+(sz4-p2)+" "+c2+","+(sz4-p2),fill:"#FF5900",stroke:"#111",strokeWidth:0.7}));
+    sk.push(React.createElement("polygon",{key:"dia",points:c2+","+p2+" "+(sz4-p2)+","+c2+" "+c2+","+(sz4-p2)+" "+p2+","+c2,fill:"#FFD500",stroke:"#111",strokeWidth:0.7}));
+    return React.createElement("svg",{width:sz4,height:sz4,viewBox:"0 0 "+sz4+" "+sz4,style:{display:"block",flexShrink:0}},sk);
+  }
+  if (type==="Square-1") {
+    // Square-1 top view: circle with alternating 60° corners and 30° edges (4+4=8 pieces)
+    // Corners are wider kite-shaped, edges are narrow triangles
+    var sq2=[],sz5=34,cx5=sz5/2,cy5=sz5/2,R2=14;
+    // Background circle
+    sq2.push(React.createElement("circle",{key:"bg",cx:cx5,cy:cy5,r:R2,fill:"#151515",stroke:"#444",strokeWidth:1}));
+    // Alternating: corner 60°, edge 30°, corner 60°, edge 30° ... × 4 = 360°
+    var sqAngles=[0,60,90,150,180,240,270,330];
+    var sqWidths=[60,30,60,30,60,30,60,30];
+    var sqCols=["#F0EDE8","#C8102E","#FFD500","#0051BA","#00A14B","#FF5900","#F0EDE8","#C8102E"];
+    for(var w=0;w<8;w++){
+      var sa3=(sqAngles[w]-90)*Math.PI/180;
+      var ea3=(sqAngles[w]+sqWidths[w]-90)*Math.PI/180;
+      var lf=w%2===0?0:1;// large arc flag not needed for <180
+      var x1s=cx5+R2*Math.cos(sa3),y1s=cy5+R2*Math.sin(sa3);
+      var x2s=cx5+R2*Math.cos(ea3),y2s=cy5+R2*Math.sin(ea3);
+      sq2.push(React.createElement("path",{key:"w"+w,
+        d:"M"+cx5+","+cy5+" L"+x1s.toFixed(1)+","+y1s.toFixed(1)+" A"+R2+","+R2+" 0 0,1 "+x2s.toFixed(1)+","+y2s.toFixed(1)+" Z",
+        fill:sqCols[w],stroke:"#111",strokeWidth:0.6}));
+    }
+    // Middle band line (horizontal through center - the slice line)
+    sq2.push(React.createElement("line",{key:"band",x1:cx5-R2,y1:cy5,x2:cx5+R2,y2:cy5,stroke:"#444",strokeWidth:2.5}));
+    return React.createElement("svg",{width:sz5,height:sz5,viewBox:"0 0 "+sz5+" "+sz5,style:{display:"block",flexShrink:0}},sq2);
+  }
+  if (type==="Clock") {
+    var ce=[];
+    ce.push(React.createElement("circle",{key:"bg",cx:16,cy:16,r:14,fill:"#2a2a1a",stroke:"#555",strokeWidth:1}));
+    for(var cr=0;cr<3;cr++)for(var cc=0;cc< 3;cc++){var dcx=8+cc*8,dcy=8+cr*8;
+      ce.push(React.createElement("circle",{key:"d"+cr+cc,cx:dcx,cy:dcy,r:3,fill:"#FFD500",stroke:"#555",strokeWidth:0.5}));
+      ce.push(React.createElement("line",{key:"h"+cr+cc,x1:dcx,y1:dcy,x2:dcx,y2:dcy-2,stroke:"#111",strokeWidth:0.8,strokeLinecap:"round"}));}
+    return React.createElement("svg",{width:32,height:32,viewBox:"0 0 32 32",style:{display:"block",flexShrink:0}},ce);
+  }
+  return faceIcon(3,32);
+}
+
+var WR=[
+  {e:"3x3x3",s:"2.76",sp:"Teodor Zajder",sd:"Feb 8, 2026",a:"3.84",ap:"Xuanyi Geng",ad:"Jan 11, 2026"},
+  {e:"2x2x2",s:"0.39",sp:"Ziyu Ye",sd:"Oct 25, 2025",a:"0.86",ap:"Sujan Feist",ad:"Dec 13, 2025"},
+  {e:"4x4x4",s:"15.18",sp:"Tymon Kolasi\u0144ski",sd:"Dec 8, 2025",a:"18.56",ap:"Tymon Kolasi\u0144ski",ad:"Jan 18, 2026"},
+  {e:"5x5x5",s:"30.45",sp:"Tymon Kolasi\u0144ski",sd:"Nov 4, 2024",a:"34.31",ap:"Tymon Kolasi\u0144ski",ad:"Jul 6, 2025"},
+  {e:"6x6x6",s:"57.69",sp:"Max Park",sd:"Apr 26, 2025",a:"1:05.04",ap:"Max Park",ad:"Oct 4, 2025"},
+  {e:"7x7x7",s:"1:33.48",sp:"Max Park",sd:"Oct 4, 2025",a:"1:36.86",ap:"Max Park",ad:"Oct 4, 2025"},
+  {e:"3x3 OH",s:"5.66",sp:"Dhruva Sai Meruva",sd:"Oct 6, 2024",a:"7.72",ap:"Luke Garrett",ad:"Mar 9, 2025"},
+  {e:"3x3 BLD",s:"11.67",sp:"Charlie Eggins",sd:"Jan 11, 2026",a:"14.05",ap:"Charlie Eggins",ad:"Jan 11, 2026"},
+  {e:"Megaminx",s:"23.20",sp:"Leandro Mart\u00EDn",sd:"2025",a:"27.33",ap:"Alexander Vujcich",ad:"2025"},
+  {e:"Pyraminx",s:"0.73",sp:"Dominik G\u00F3rny",sd:"2024",a:"1.30",ap:"Tymon Kolasi\u0144ski",ad:"2025"},
+  {e:"Skewb",s:"0.93",sp:"Andrew Huang",sd:"2024",a:"1.61",ap:"Andy Gong",ad:"2025"},
+  {e:"Square-1",s:"3.41",sp:"Aidan Lim",sd:"2025",a:"5.02",ap:"Aidan Lim",ad:"2025"},
+  {e:"Clock",s:"1.53",sp:"Lachlan Gibson",sd:"Sep 27, 2025",a:"2.24",ap:"Brendyn Dunagan",ad:"Dec 13, 2025"}
+];
+function WorldRecords(){
+  var rows=WR.map(function(r,i){return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",padding:"12px 14px",borderBottom:"1px solid var(--bd)",gap:12}},
+    puzzleIcon(r.e),
+    React.createElement("div",{style:{flex:1,minWidth:0}},
+      React.createElement("div",{style:{fontWeight:700,fontSize:14,color:"var(--tp)",marginBottom:3}},r.e),
+      React.createElement("div",{style:{fontSize:11,color:"var(--ts)",marginBottom:1}},
+        "Single: ",React.createElement("span",{style:{color:"var(--ag)",fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}},r.s),
+        " \u2014 ",r.sp,
+        React.createElement("span",{style:{color:"var(--tm)",fontSize:10}}," ("+r.sd+")")),
+      React.createElement("div",{style:{fontSize:11,color:"var(--ts)"}},
+        "Average: ",React.createElement("span",{style:{color:"var(--ab)",fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}},r.a),
+        " \u2014 ",r.ap,
+        React.createElement("span",{style:{color:"var(--tm)",fontSize:10}}," ("+r.ad+")"))));});
+  return React.createElement("div",null,React.createElement("h2",{style:{fontSize:20,fontWeight:700,marginBottom:4}},"\u{1F30D} WCA World Records"),React.createElement("p",{style:{color:"var(--ts)",marginBottom:16,fontSize:12}},"Official records as of March 2026"),React.createElement("div",{style:{borderRadius:12,overflow:"hidden",border:"1px solid var(--bd)",background:"var(--s2)"}},rows));
+}
+
+/* ── ALGORITHMS ── */
+var ALGS_3X3={OLL:[{n:"Sune",a:"R U R' U R U2 R'",d:"One of the most common OLL cases"},{n:"Anti-Sune",a:"R U2 R' U' R U' R'",d:"Mirror of Sune"},{n:"H",a:"R U R' U R U' R' U R U2 R'",d:"Headlights on both sides"},{n:"Pi",a:"R U2 R2 U' R2 U' R2 U2 R",d:"No edges oriented"},{n:"T",a:"r U R' U' r' F R F'",d:"T-shape on top"},{n:"L",a:"F R U R' U' F'",d:"L-shape on top"},{n:"U",a:"R2 D R' U2 R D' R' U2 R'",d:"U-shape on top"},{n:"Cross",a:"R U2 R' U' R U R' U' R U' R'",d:"Cross already formed"}],PLL:[{n:"T-perm",a:"R U R' U' R' F R2 U' R' U' R U R' F'",d:"Swap 2 adjacent corners + 2 edges"},{n:"Y-perm",a:"F R U' R' U' R U R' F' R U R' U' R' F R F'",d:"Diagonal corner swap"},{n:"Ua-perm",a:"R U' R U R U R U' R' U' R2",d:"3-cycle edges CW"},{n:"Ub-perm",a:"R2 U R U R' U' R' U' R' U R'",d:"3-cycle edges CCW"},{n:"H-perm",a:"M2 U M2 U2 M2 U M2",d:"Swap opposite edges"},{n:"Z-perm",a:"M2 U M2 U M' U2 M2 U2 M'",d:"Swap adjacent edges"},{n:"Aa-perm",a:"x R' U R' D2 R U' R' D2 R2 x'",d:"3-cycle corners CW"},{n:"Ab-perm",a:"x R2 D2 R U R' D2 R U' R x'",d:"3-cycle corners CCW"}],F2L:[{n:"Basic Insert",a:"U R U' R'",d:"Basic right slot insert"},{n:"Basic Insert (L)",a:"U' L' U L",d:"Basic left slot insert"},{n:"Pair Already Made",a:"R U R'",d:"Pair formed, insert directly"},{n:"Split (Right)",a:"U' R U R' U R U' R'",d:"Edge in top, corner in bottom"},{n:"Split (Left)",a:"U L' U' L U' L' U L",d:"Mirror of split case"},{n:"Pair on Top",a:"R U2 R' U R U' R'",d:"Both pieces in U layer"},{n:"Corner in Slot",a:"R U R' U' R U R' U' R U R'",d:"Corner stuck in wrong slot"},{n:"Edge in Slot",a:"U R U' R' U' F' U F",d:"Edge stuck in wrong slot"}]};
+var ALGS_2X2={Ortega:[{n:"Ortega face first",a:"R U R' U' R' F R F'",d:"Orient the last layer after making one face"},{n:"Ortega anti-sune",a:"R U2 R' U' R U' R'",d:"Common OLL-style Ortega case"},{n:"Ortega headlights",a:"R2 U2 R U2 R2",d:"Simple last-layer orientation pattern"},{n:"Ortega bowtie",a:"F R U R' U' R U R' U' F'",d:"Useful when the top stickers form a bowtie"}],CLL:[{n:"Sune CLL",a:"R U R' U R U2 R'",d:"Solve corners when all last-layer stickers are oriented"},{n:"Anti-Sune CLL",a:"R U2 R' U' R U' R'",d:"Mirror CLL case"},{n:"T CLL",a:"R U R' U' R' F R F'",d:"Swap last-layer corners with adjacent bars"},{n:"U CLL",a:"R2 D R' U2 R D' R' U2 R'",d:"Bar case that cycles corners cleanly"}],PBL:[{n:"Adjacent / Adjacent",a:"R2 U' B2 U2 R2 U' R2",d:"Swap both layers when both have adjacent bars"},{n:"Opposite / Opposite",a:"R2 F2 R2",d:"Fast PBL when both layers have opposite stickers"},{n:"Adjacent / Opposite",a:"R2 U B2 U2 R2 U' R2",d:"One layer has a bar, the other has opposite stickers"},{n:"Diagonal / Diagonal",a:"R U' R F2 R' U R'",d:"Corner swap finish when neither layer has a bar"}]};
+
+function AlgorithmsPage(props){
+  var eventKey=props.eventKey||"3x3";
+  var algSets=eventKey==="2x2"?ALGS_2X2:ALGS_3X3;
+  var tabs=Object.keys(algSets);
+  var _t=useState(tabs[0]),tab=_t[0],setTab=_t[1];
+  useEffect(function(){setTab(Object.keys(eventKey==="2x2"?ALGS_2X2:ALGS_3X3)[0]);},[eventKey]);
+  var algs=algSets[tab]||[];
+  var tabEls=tabs.map(function(t){return React.createElement("button",{key:t,onClick:function(){setTab(t);},style:{padding:"8px 20px",borderRadius:20,border:"2px solid",borderColor:t===tab?"var(--ab)":"var(--bd)",background:t===tab?"var(--abd)":"transparent",color:t===tab?"var(--ab)":"var(--ts)",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'JetBrains Mono',monospace"}},t);});
+  var cards=algs.map(function(a,i){return React.createElement("div",{key:i,style:{padding:"14px 16px",borderRadius:12,background:"var(--s2)",border:"1px solid var(--bd)",marginBottom:10}},React.createElement("div",{style:{fontWeight:700,fontSize:15,color:"var(--tp)",marginBottom:4}},a.n),React.createElement("div",{style:{fontFamily:"'JetBrains Mono',monospace",fontSize:13,color:"var(--ab)",marginBottom:6,padding:"8px 12px",borderRadius:8,background:"var(--s3)",letterSpacing:0.5}},a.a),React.createElement("div",{style:{fontSize:12,color:"var(--ts)"}},a.d));});
+  return React.createElement("div",null,React.createElement("h2",{style:{fontSize:20,fontWeight:700,marginBottom:4}},"📖 Algorithms"),React.createElement("p",{style:{color:"var(--ts)",marginBottom:16,fontSize:12}},eventKey==="2x2"?"Learn essential 2x2 methods like Ortega, CLL, and PBL":"Learn essential CFOP algorithms"),React.createElement("div",{style:{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}},tabEls),React.createElement("div",null,cards));
+}
+
+/* ── TIMERS ── */
+function G5Timer(props){
+  var onSolve=props.onSolve,inspection=props.inspection;var _p=useState("idle"),ph=_p[0],setPh=_p[1];var _d=useState("0.00"),disp=_d[0],setDisp=_d[1];var _tick=useState(0),ftk=_tick[1];
+  var L=useRef(false),R2=useRef(false);var st=useRef(null),raf=useRef(null),ins=useRef(null),ht=useRef(null),rdy=useRef(false),pr=useRef("idle"),relHandled=useRef(false);
+  useEffect(function(){pr.current=ph;},[ph]);
+  var go=useCallback(function(){if(ins.current){clearInterval(ins.current);ins.current=null;}if(ht.current){clearTimeout(ht.current);ht.current=null;}rdy.current=false;st.current=Date.now();pr.current="solving";setPh("solving");function t(){setDisp(tf(Date.now()-st.current));raf.current=requestAnimationFrame(t);}raf.current=requestAnimationFrame(t);},[]);
+  var stp=useCallback(function(){if(raf.current)cancelAnimationFrame(raf.current);var t=Date.now()-st.current;setDisp(tf(t));pr.current="stopped";setPh("stopped");rdy.current=false;if(onSolve)onSolve(t);},[onSolve]);
+  var insp=useCallback(function(){if(ins.current)clearInterval(ins.current);if(ht.current){clearTimeout(ht.current);ht.current=null;}rdy.current=false;pr.current="inspecting";setPh("inspecting");setDisp("15");var t=15;ins.current=setInterval(function(){t--;setDisp(t<=0?"+2":String(t));if(t<=0){clearInterval(ins.current);ins.current=null;}},1000);},[]);
+  var resetIdle=function(){if(ht.current){clearTimeout(ht.current);ht.current=null;}if(ins.current){clearInterval(ins.current);ins.current=null;}rdy.current=false;pr.current="idle";setPh("idle");setDisp("0.00");};
+  var dn=function(s){if(s==="L")L.current=true;else R2.current=true;ftk(function(n){return n+1;});var p=pr.current,b=L.current&&R2.current;if(!b)return;relHandled.current=false;if(p==="solving"){relHandled.current=true;stp();return;}if(p==="stopped"){relHandled.current=true;resetIdle();return;}if(p==="idle"){if(ht.current)clearTimeout(ht.current);ht.current=setTimeout(function(){if(L.current&&R2.current&&pr.current==="idle"){rdy.current=true;pr.current="ready";setPh("ready");}ht.current=null;},350);}};
+  var up=function(s){if(s==="L")L.current=false;else R2.current=false;ftk(function(n){return n+1;});if(relHandled.current){if(!L.current&&!R2.current)relHandled.current=false;return;}if(ht.current){clearTimeout(ht.current);ht.current=null;}var p=pr.current;if(rdy.current&&(p==="ready"||p==="idle")){relHandled.current=true;rdy.current=false;inspection?insp():go();return;}if(p==="inspecting"){relHandled.current=true;if(ins.current){clearInterval(ins.current);ins.current=null;}go();return;}if(p==="ready"&&!L.current&&!R2.current){rdy.current=false;pr.current="idle";setPh("idle");}};
+  var pressBothDown=function(){dn("L");dn("R");};
+  var pressBothUp=function(){up("L");up("R");};
+  useEffect(function(){return function(){if(raf.current)cancelAnimationFrame(raf.current);if(ins.current)clearInterval(ins.current);if(ht.current)clearTimeout(ht.current);};},[]);
+  var clr=ph==="ready"?"#00E676":ph==="inspecting"?"#FF9800":ph==="stopped"?"var(--ab)":"var(--tp)";
+  var canDesktopTest=typeof window!=="undefined" && !("ontouchstart" in window) && !(typeof navigator!=="undefined" && navigator.maxTouchPoints>0);
+  var pads=["L","R"].map(function(s){var d=s==="L"?L.current:R2.current;return React.createElement("div",{key:s,onTouchStart:function(e){e.preventDefault();dn(s);},onTouchEnd:function(e){e.preventDefault();up(s);},onTouchCancel:function(e){e.preventDefault();up(s);},onMouseDown:function(){dn(s);},onMouseUp:function(){up(s);},onMouseLeave:function(){if(s==="L"?L.current:R2.current)up(s);},style:{flex:1,maxWidth:160,height:110,borderRadius:18,cursor:"pointer",background:d?(ph==="ready"?"rgba(0,230,118,.12)":"var(--abd)"):"var(--s2)",border:"3px solid "+(d?(ph==="ready"?"#00E676":"var(--ab)"):"var(--bd)"),display:"flex",alignItems:"center",justifyContent:"center",fontSize:32,transition:"all .15s"}},"🤚");});
+  var desktopTestButton=canDesktopTest?React.createElement("button",{onMouseDown:function(e){if(e&&e.preventDefault)e.preventDefault();pressBothDown();},onMouseUp:function(e){if(e&&e.preventDefault)e.preventDefault();pressBothUp();},onMouseLeave:function(){if(L.current||R2.current)pressBothUp();},style:{marginTop:18,padding:"10px 16px",borderRadius:10,border:"1px solid var(--bd)",background:"var(--s2)",color:"var(--tp)",cursor:"pointer",fontWeight:600,fontFamily:"inherit"}},"Tap"):null;
+  return React.createElement("div",{style:{textAlign:"center",padding:"16px 0",userSelect:"none",WebkitUserSelect:"none"}},React.createElement("div",{style:{fontFamily:"'JetBrains Mono',monospace",fontSize:"clamp(48px,14vw,80px)",fontWeight:700,color:clr,letterSpacing:-2,lineHeight:1}},disp),React.createElement("div",{style:{marginTop:8,fontSize:11,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace",minHeight:16}},ph==="idle"?"Both hands on pads":ph==="ready"?"Release!":ph==="inspecting"?"Inspecting":ph==="solving"?"Solving...":"Done"),React.createElement("div",{style:{display:"flex",gap:100,justifyContent:"center",marginTop:32,padding:"0 16px"}},pads),desktopTestButton);
+}
+
+function KBTimer(props){
+  var onSolve=props.onSolve,inspection=props.inspection;var _p=useState("idle"),ph=_p[0],setPh=_p[1];var _d=useState("0.00"),disp=_d[0],setDisp=_d[1];
+  var st=useRef(null),raf=useRef(null),ins=useRef(null),hs=useRef(null),rdy=useRef(false),pr=useRef("idle");
+  useEffect(function(){pr.current=ph;},[ph]);
+  var go=useCallback(function(){st.current=Date.now();setPh("solving");function t(){setDisp(tf(Date.now()-st.current));raf.current=requestAnimationFrame(t);}raf.current=requestAnimationFrame(t);},[]);
+  var stp=useCallback(function(){if(raf.current)cancelAnimationFrame(raf.current);var t=Date.now()-st.current;setDisp(tf(t));setPh("stopped");if(onSolve)onSolve(t);},[onSolve]);
+  var insp=useCallback(function(){setPh("inspecting");setDisp("15");var t=15;ins.current=setInterval(function(){t--;setDisp(t<=0?"+2":String(t));if(t<=0)clearInterval(ins.current);},1000);},[]);
+  useEffect(function(){function kd(e){if(e.code!=="Space")return;e.preventDefault();var p=pr.current;if(p==="solving"){stp();return;}if(p==="stopped"){setPh("idle");setDisp("0.00");rdy.current=false;return;}if(!hs.current)hs.current=Date.now();if(Date.now()-hs.current>300){rdy.current=true;setPh("ready");}}function ku(e){if(e.code!=="Space")return;e.preventDefault();var p=pr.current;if(rdy.current&&(p==="ready"||p==="idle")){rdy.current=false;hs.current=null;inspection?insp():go();return;}if(p==="inspecting"){if(ins.current)clearInterval(ins.current);go();hs.current=null;rdy.current=false;return;}hs.current=null;rdy.current=false;if(p!=="solving")setPh("idle");}window.addEventListener("keydown",kd);window.addEventListener("keyup",ku);return function(){window.removeEventListener("keydown",kd);window.removeEventListener("keyup",ku);};},[inspection,go,stp,insp]);
+  useEffect(function(){return function(){if(raf.current)cancelAnimationFrame(raf.current);if(ins.current)clearInterval(ins.current);};},[]);
+  var clr=ph==="ready"?"#00E676":ph==="inspecting"?"#FF9800":ph==="stopped"?"var(--ab)":"var(--tp)";
+  return React.createElement("div",{style:{textAlign:"center",padding:"24px 0",userSelect:"none"}},React.createElement("div",{style:{fontFamily:"'JetBrains Mono',monospace",fontSize:"clamp(48px,14vw,80px)",fontWeight:700,color:clr,letterSpacing:-2,lineHeight:1}},disp),React.createElement("div",{style:{marginTop:10,fontSize:11,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace"}},ph==="idle"?"Hold SPACE":ph==="ready"?"Release!":ph==="inspecting"?"SPACE to solve":ph==="solving"?"Solving...":"SPACE for next"),React.createElement("div",{style:{margin:"16px auto 0",width:180,height:42,borderRadius:10,border:"2px solid "+(ph==="ready"?"#00E676":"var(--bd)"),background:ph==="ready"?"rgba(0,230,118,.08)":"var(--s2)",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"var(--tm)"}},"SPACE"));
+}
+
+/* ── SOLVE LIST ── */
+function Solves(props){
+  var solves=props.solves,onP=props.onP,onD=props.onD;if(!solves.length)return null;
+  var stats=[["best",tf(bst(solves)),"var(--ag)"],["ao5",tf(aoN(solves,5)),"var(--tp)"],["ao12",tf(aoN(solves,12)),"var(--tp)"]];
+  var statEls=stats.map(function(s){return React.createElement("div",{key:s[0],style:{textAlign:"center"}},React.createElement("div",{style:{color:"var(--tm)",marginBottom:2,fontSize:10}},s[0]),React.createElement("div",{style:{color:s[2],fontWeight:700}},s[1]));});
+  var rows=solves.slice().reverse().map(function(s,i){var ri=solves.length-1-i;var btns=["+2","DNF"].map(function(p){return React.createElement("button",{key:p,onClick:function(){onP(ri,p);},style:{padding:"2px 6px",borderRadius:4,border:"none",fontSize:9,fontWeight:700,cursor:"pointer",fontFamily:"'JetBrains Mono',monospace",color:s.p===p?(p==="+2"?"#FF9800":"#EF5350"):"var(--tm)",background:s.p===p?(p==="+2"?"rgba(255,152,0,.15)":"rgba(239,83,80,.15)"):"var(--s3)"}},p);});btns.push(React.createElement("button",{key:"x",onClick:function(){onD(ri);},style:{padding:"2px 6px",borderRadius:4,border:"none",fontSize:9,cursor:"pointer",color:"var(--tm)",background:"var(--s3)"}},"\u2715"));return React.createElement("div",{key:s.id,style:{display:"flex",alignItems:"center",padding:"7px 12px",borderBottom:"1px solid var(--bd)",fontFamily:"'JetBrains Mono',monospace",fontSize:12}},React.createElement("span",{style:{color:"var(--tm)",width:26}},ri+1+"."),React.createElement("span",{style:{flex:1,fontWeight:600,color:s.p==="DNF"?"#EF5350":"var(--tp)"}},s.p==="DNF"?"DNF":tf(s.t+(s.p==="+2"?2000:0))),React.createElement("div",{style:{display:"flex",gap:4}},btns));});
+  return React.createElement("div",{style:{marginTop:18}},React.createElement("div",{style:{display:"flex",justifyContent:"space-around",padding:10,borderRadius:10,background:"var(--s2)",marginBottom:10,fontFamily:"'JetBrains Mono',monospace",fontSize:12}},statEls),React.createElement("div",{style:{maxHeight:170,overflowY:"auto",borderRadius:10,background:"var(--s2)"}},rows));
+}
+
+/* ── CAMERA TRAINING ── */
+
+// SolvePlayer: starts from scrambled state, animates solution with phase labels
+function SolvePlayer(props){
+  var scramble2=props.scramble,solution=props.solution,speed=props.speed,phases=props.phases,cubeType=props.cubeType||"3x3";
+  var _step=useState(0),step=_step[0],setStep=_step[1];
+  var _playing=useState(false),playing=_playing[0],setPlaying=_playing[1];
+  var _animReq=useState(null),animReq=_animReq[0],setAnimReq=_animReq[1];
+  var _jumpVer=useState(0),jumpVer=_jumpVer[0],setJumpVer=_jumpVer[1];
+  var _jumpMoves=useState(scramble2.slice()),jumpMoves=_jumpMoves[0],setJumpMoves=_jumpMoves[1];
+  var playRef=useRef(false),stepRef=useRef(0);
+  useEffect(function(){playRef.current=playing;},[playing]);
+  useEffect(function(){stepRef.current=step;},[step]);
+  useEffect(function(){setStep(0);setPlaying(false);setAnimReq(null);setJumpMoves(scramble2.slice());setJumpVer(function(v){return v+1;});},[solution]);
+
+  var doAnimStep=useCallback(function(){
+    var cur=stepRef.current;
+    if(cur>=solution.length){setPlaying(false);return;}
+    setStep(cur+1);
+    setAnimReq({move:solution[cur],speed:speed,onDone:function(){setAnimReq(null);}});
+  },[solution,speed]);
+  useEffect(function(){
+    if(!playing||animReq)return;
+    var t=setTimeout(function(){if(playRef.current)doAnimStep();},15);
+    return function(){clearTimeout(t);};
+  },[playing,animReq,doAnimStep]);
+
+  var jumpTo=function(n){setPlaying(false);setAnimReq(null);setStep(n);setJumpMoves(scramble2.concat(solution.slice(0,n)));setJumpVer(function(v){return v+1;});};
+  var goStart=function(){jumpTo(0);};
+  var goEnd=function(){jumpTo(solution.length);};
+  var stepBack=function(){if(animReq||step<=0)return;jumpTo(step-1);};
+  var stepFwd=function(){if(animReq||step>=solution.length)return;setStep(step+1);setAnimReq({move:solution[step],speed:speed,onDone:function(){setAnimReq(null);}});};
+  var togglePlay=function(){if(step>=solution.length){jumpTo(0);setTimeout(function(){setPlaying(true);},60);}else setPlaying(function(p){return!p;});};
+
+  // Get phase info for a given move index
+  function getPhase(idx){
+    if(!phases)return{name:"",color:"var(--tm)"};
+    var cumulative=0;
+    for(var i=0;i<phases.length;i++){
+      cumulative+=phases[i].count;
+      if(idx<cumulative)return phases[i];
+    }
+    return phases[phases.length-1]||{name:"",color:"var(--tm)"};
+  }
+  var currentPhase=step>0?getPhase(step-1):{name:"Ready",color:"var(--tm)"};
+
+  // Notation with phase coloring
+  var notation=solution.map(function(m,i){
+    var ph2=getPhase(i);
+    var isDone=i<step,isCur=(i===step-1)&&step>0;
+    return React.createElement("span",{key:i,style:{padding:"3px 8px",borderRadius:6,fontWeight:600,transition:"all .15s",
+      color:isCur?"#fff":isDone?ph2.color:"var(--tm)",
+      background:isCur?ph2.color:isDone?ph2.color+"18":"transparent",
+      borderBottom:isCur?"none":"2px solid "+(isDone?ph2.color+"40":"transparent")}},m);});
+
+  var mkBtn=function(label,onClick,primary){return React.createElement("button",{onClick:onClick,style:{width:44,height:44,borderRadius:12,border:primary?"none":"1.5px solid var(--bd)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",background:primary?"var(--ab)":"var(--s2)",color:primary?"#fff":"var(--tp)",fontSize:16,fontWeight:600,transition:"all .15s",boxShadow:primary?"0 2px 8px rgba(77,124,255,0.3)":"none"}},label);};
+
+  return React.createElement("div",{style:{padding:20}},
+    // Current phase indicator
+    React.createElement("div",{style:{textAlign:"center",marginBottom:10}},
+      React.createElement("span",{style:{display:"inline-block",padding:"4px 14px",borderRadius:14,fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",background:currentPhase.color+"18",color:currentPhase.color,border:"1px solid "+currentPhase.color+"40"}},
+        step>=solution.length?"\u2705 SOLVED":step===0?"Scrambled \u2014 ready to solve":"Step "+step+"/"+solution.length+": "+currentPhase.name)),
+    // Notation
+    React.createElement("div",{style:{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:5,marginBottom:18,padding:"12px 16px",borderRadius:12,background:"var(--s2)",fontFamily:"'JetBrains Mono',monospace",fontSize:14}},notation),
+    // 3D Cube
+    React.createElement(ThreeCube,{jumpToMoves:jumpMoves,jumpVersion:jumpVer,animRequest:animReq,cubeType:cubeType}),
+    // Controls
+    React.createElement("div",{style:{display:"flex",justifyContent:"center",alignItems:"center",gap:10,marginTop:16}},mkBtn("\u23EE",goStart),mkBtn("\u25C0",stepBack),mkBtn(playing?"\u23F8":"\u25B6",togglePlay,true),mkBtn("\u25B6",stepFwd),mkBtn("\u23ED",goEnd)),
+    React.createElement("div",{style:{textAlign:"center",marginTop:8,fontSize:12,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace"}},step+" / "+solution.length));
+}
+function CamTrain(props){
+  var onSolve=props.onSolve,scramble=props.scramble,cubeType=props.cubeType||"3x3";
+  var _cs=useState("ask"),cs=_cs[0],setCs=_cs[1];
+  var _ph=useState("idle"),ph=_ph[0],setPh=_ph[1];
+  var _recap=useState(null),recap=_recap[0],setRecap=_recap[1];
+  var _msg=useState(""),msg=_msg[0],setMsg=_msg[1];
+  var _disp=useState("0.00"),disp=_disp[0],setDisp=_disp[1];
+  var _showOpt=useState(false),showOpt=_showOpt[0],setShowOpt=_showOpt[1];
+  var _optSpeed=useState(1.5),optSpeed=_optSpeed[0],setOptSpeed=_optSpeed[1];
+  var vRef=useRef(null);
+  var canvRef=useRef(null);
+  var strmRef=useRef(null);
+  var startRef=useRef(null);
+  var rafRef=useRef(null);
+  var detRef=useRef(null);
+  var phRef=useRef("idle");
+  var pausedTotal=useRef(0);
+  var pauseStart=useRef(null);
+  var solveT=useRef(null);
+  var stableRef=useRef(0);
+  var lostRef=useRef(0);
+
+  useEffect(function(){phRef.current=ph;},[ph]);
+
+  // Analyze center of camera for cube colors
+  function analyzeFrame(){
+    var v=vRef.current, c=canvRef.current;
+    if(!v||!c||v.readyState<2||v.videoWidth===0)return null;
+    var ctx=c.getContext("2d");
+    c.width=200; c.height=150;
+    ctx.drawImage(v,0,0,200,150);
+    var d=ctx.getImageData(0,0,200,150).data;
+    // Sample center 40% of frame
+    var x1=60,x2=140,y1=45,y2=105;
+    var hits=0, tot=0, seen={};
+    for(var y=y1;y<y2;y+=2){
+      for(var x=x1;x<x2;x+=2){
+        tot++;
+        var i=(y*200+x)*4;
+        var r=d[i],g=d[i+1],b=d[i+2];
+        if(r<25&&g<25&&b<25)continue; // skip black
+        var mx=Math.max(r,g,b), mn=Math.min(r,g,b), s=mx-mn;
+        var col=null;
+        if(mx>150&&s<50)col="W";
+        else if(r>130&&g>100&&b<100)col="Y";
+        else if(r>130&&g<100&&b<80)col="R";
+        else if(r>140&&g>50&&g<130&&b<80)col="O";
+        else if(g>70&&g>r&&g>b)col="G";
+        else if(b>70&&b>r&&b>g)col="B";
+        if(col){hits++;seen[col]=true;}
+      }
+    }
+    var pct=hits/Math.max(tot,1);
+    var nColors=Object.keys(seen).length;
+    return {pct:pct, nColors:nColors, cubeFound:pct>0.15, scrambled:nColors>=3};
+  }
+
+  // Request camera
+  function reqCam(){
+    var tryFacing=function(facing){
+      return navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:640}}});
+    };
+    tryFacing("environment").catch(function(){return tryFacing("user");}).then(function(s){
+      strmRef.current=s; setCs("ok"); setPh("checking"); setMsg("Show your scrambled cube in the center");
+    }).catch(function(){setCs("no");});
+  }
+
+  // Attach stream to video
+  useEffect(function(){
+    if(cs==="ok"&&strmRef.current&&vRef.current){
+      vRef.current.srcObject=strmRef.current;
+    }
+  },[cs]);
+
+  // Phase: checking — look for scrambled cube, need 4 stable detections
+  useEffect(function(){
+    if(ph!=="checking")return;
+    stableRef.current=0;
+    function loop(){
+      if(phRef.current!=="checking")return;
+      var r=analyzeFrame();
+      if(r&&r.cubeFound&&r.scrambled){
+        stableRef.current++;
+        if(stableRef.current>=4){
+          setPh("ready"); setMsg("Scrambled cube confirmed! Press SPACE or tap Start");
+        } else {
+          setMsg("Detecting cube... hold steady ("+stableRef.current+"/4)");
+        }
+      } else if(r&&r.cubeFound){
+        stableRef.current=0;
+        setMsg("Cube seen but doesn\u2019t look scrambled \u2014 apply the scramble first");
+      } else {
+        stableRef.current=0;
+        setMsg("Show your scrambled cube \u2014 fill the center of the frame");
+      }
+      detRef.current=setTimeout(loop,500);
+    }
+    loop();
+    return function(){if(detRef.current)clearTimeout(detRef.current);};
+  },[ph]);
+
+  // Phase: solving — monitor for cube leaving frame
+  useEffect(function(){
+    if(ph!=="solving")return;
+    lostRef.current=0;
+    function loop(){
+      if(phRef.current!=="solving")return;
+      var r=analyzeFrame();
+      if(!r||!r.cubeFound){
+        lostRef.current++;
+        if(lostRef.current>=3){
+          // Cube gone for ~1.5s — pause
+          setPh("paused"); setMsg("\u26A0\uFE0F Cube lost! Show it to the camera to resume");
+          pauseStart.current=Date.now();
+          if(rafRef.current)cancelAnimationFrame(rafRef.current);
+          lostRef.current=0;
+        }
+      } else {
+        lostRef.current=0;
+      }
+      detRef.current=setTimeout(loop,500);
+    }
+    loop();
+    return function(){if(detRef.current)clearTimeout(detRef.current);};
+  },[ph]);
+
+  // Phase: paused — wait for cube to reappear
+  useEffect(function(){
+    if(ph!=="paused")return;
+    function loop(){
+      if(phRef.current!=="paused")return;
+      var r=analyzeFrame();
+      if(r&&r.cubeFound){
+        pausedTotal.current+=Date.now()-pauseStart.current;
+        setPh("solving"); setMsg("Resumed! Keep going \u{1F4AA}");
+        // Restart display loop
+        (function tick(){
+          setDisp(tf(Date.now()-startRef.current-pausedTotal.current));
+          rafRef.current=requestAnimationFrame(tick);
+        })();
+      }
+      detRef.current=setTimeout(loop,400);
+    }
+    loop();
+    return function(){if(detRef.current)clearTimeout(detRef.current);};
+  },[ph]);
+
+  // Start solve
+  function startSolve(){
+    if(phRef.current!=="ready")return;
+    setPh("solving"); setRecap(null); solveT.current=null;
+    pausedTotal.current=0; pauseStart.current=null; lostRef.current=0;
+    startRef.current=Date.now(); setMsg("Solving... \u{1F525}");
+    (function tick(){
+      setDisp(tf(Date.now()-startRef.current-pausedTotal.current));
+      rafRef.current=requestAnimationFrame(tick);
+    })();
+  }
+
+  // Stop solve + AI analysis
+  function stopSolve(){
+    var p=phRef.current; if(p!=="solving"&&p!=="paused")return;
+    if(rafRef.current)cancelAnimationFrame(rafRef.current);
+    if(p==="paused"&&pauseStart.current)pausedTotal.current+=Date.now()-pauseStart.current;
+    var t=Date.now()-startRef.current-pausedTotal.current;
+    setDisp(tf(t)); solveT.current=t;
+    setPh("analyzing"); setMsg("AI is analyzing your solve...");
+    var sec=t/1000;
+    var prompt="You are an elite, motivating Rubik\u2019s cube coach. A cuber solved a '+cubeType+' in "+sec.toFixed(2)+"s. Scramble: "+scramble.join(" ")+". "+(pausedTotal.current>0?"Paused "+tf(pausedTotal.current)+" (cube left camera).":"No pauses.")+"\n\nGive detailed coaching in JSON with:\n- level: string\n- emoji: one emoji\n- motivation: 3 sentences, warm and specific to their time\n- crossAnalysis: {time: string, feedback: 3 detailed sentences}\n- f2lAnalysis: {time: string, feedback: 3 detailed sentences}\n- ollAnalysis: {time: string, feedback: 3 detailed sentences}\n- pllAnalysis: {time: string, feedback: 3 detailed sentences}\n- efficiency: number 0-100\n- topTip: single best actionable advice\n- practiceplan: array of 4 strings with emoji prefixes\n- comparisonToWR: fun comparison to 2.76s world record\n- movementNote: observation about their solving fluidity\n\nBe encouraging and specific. JSON only, no markdown.";
+    fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1200,messages:[{role:"user",content:prompt}]})
+    }).then(function(r){return r.json();}).then(function(data){
+      var txt="";if(data.content)for(var i=0;i<data.content.length;i++){if(data.content[i].type==="text")txt+=data.content[i].text;}
+      try{setRecap({t:t,ai:JSON.parse(txt.replace(/```json|```/g,"").trim()),pt:pausedTotal.current});}
+      catch(e){doFallback(t,sec);}
+      setPh("stopped");setMsg("Analysis complete!");
+    }).catch(function(){doFallback(t,t/1000);setPh("stopped");setMsg("Analysis complete!");});
+  }
+
+  function doFallback(t,sec){
+    var lv=sec<=10?"Advanced":sec<=20?"Intermediate+":sec<=40?"Intermediate":sec<=90?"Beginner+":"Beginner";
+    var em=sec<=10?"\u{1F525}":sec<=20?"\u26A1":sec<=40?"\u{1F4AA}":sec<=90?"\u{1F31F}":"\u{1F3AF}";
+    setRecap({t:t,pt:pausedTotal.current,ai:{level:lv,emoji:em,
+      motivation:sec<=15?"Incredible speed! You\u2019re solving at a competitive level that takes real dedication.":sec<=30?"Impressive solve! Your practice is clearly paying off. Sub-20 is within reach!":sec<=60?"Great job! You\u2019re building solid skills. With focused practice, big improvements are coming.":"You solved it! That\u2019s an achievement. Every solve you do builds your muscle memory.",
+      crossAnalysis:{time:(sec*0.12).toFixed(1)+"s",feedback:sec>30?"Plan your entire cross during the 15s inspection. Aim for 8 moves max. Try being color-neutral to always pick the easiest cross.":"Your cross is efficient. Look for x-cross opportunities to get a head start on F2L."},
+      f2lAnalysis:{time:(sec*0.48).toFixed(1)+"s",feedback:sec>30?"This is where the biggest gains are. Learn intuitive F2L: pair corner+edge, then insert. Focus on using U moves instead of whole-cube rotations.":"Work on look-ahead: track your next pair while inserting the current one. Reduce rotations to zero if possible."},
+      ollAnalysis:{time:(sec*0.20).toFixed(1)+"s",feedback:sec>30?"Start with 2-look OLL (just 9 algorithms). Drill each one 50+ times before moving to the next.":"Improve recognition speed by identifying the case during your last F2L insert, not after."},
+      pllAnalysis:{time:(sec*0.20).toFixed(1)+"s",feedback:sec>30?"Learn the 8 most common PLLs first: T, Y, Ua, Ub, H, Z, Aa, Ab perms. These cover 60% of solves.":"Practice recognizing PLL from 2 sides simultaneously and predicting AUF."},
+      efficiency:Math.min(95,Math.round(40+2500/sec)),
+      topTip:sec>60?"Learn CFOP \u2014 it\u2019s the key to breaking 1 minute.":sec>30?"F2L look-ahead will give you the single biggest speed boost.":sec>15?"Reduce recognition pauses between phases.":"Focus on consistency and ao5 personal bests.",
+      practiceplan:["\u{1F3AF} Daily: "+(sec>30?"20 min F2L practice":"Ao100 for consistency"),"\u{1F504} Daily: "+(sec>30?"Drill slowest OLL/PLL":"Phase transition drills"),"\u{1F9D8} Weekly: "+(sec>30?"Untimed smooth solves":"Competition simulation"),"\u{1F3C6} Goal: Sub-"+Math.ceil(sec*0.8)+" in 2-3 weeks!"],
+      comparisonToWR:"WR is 2.76s. You\u2019re "+(sec/2.76).toFixed(1)+"x that \u2014 every solve brings you closer to YOUR personal best!",
+      movementNote:sec>60?"Focus on continuous turning \u2014 pauses between moves are your biggest time sink.":sec>20?"Your turning is solid. Work on eliminating the small pauses during recognition.":"Your execution is fluid. Micro-optimizations in transitions will shave off fractions."}});
+  }
+
+  function invertScramble(scr){var inv=[];for(var i=scr.length-1;i>=0;i--){var m=scr[i],base=m[0],mod=m.slice(1);if(mod==="'")inv.push(base);else if(mod==="2")inv.push(base+"2");else inv.push(base+"'");}return inv;}
+  var optimalSolve=useMemo(function(){return invertScramble(scramble);},[scramble]);
+
+  function saveNext(){if(solveT.current&&onSolve)onSolve(solveT.current);}
+  function again(){setRecap(null);setDisp("0.00");solveT.current=null;setShowOpt(false);setPh("checking");setMsg("Show your scrambled cube");}
+  function goBack(){if(onSolve)onSolve(-1);}
+
+  // Spacebar
+  useEffect(function(){
+    function kd(e){if(e.code!=="Space")return;e.preventDefault();
+      var p=phRef.current;
+      if(p==="solving"||p==="paused")stopSolve();
+      else if(p==="ready")startSolve();
+    }
+    window.addEventListener("keydown",kd);return function(){window.removeEventListener("keydown",kd);};
+  },[]);
+
+  // Cleanup
+  useEffect(function(){return function(){
+    if(strmRef.current)strmRef.current.getTracks().forEach(function(t){t.stop();});
+    if(rafRef.current)cancelAnimationFrame(rafRef.current);
+    if(detRef.current)clearTimeout(detRef.current);
+  };},[]);
+
+  // Render: ask
+  if(cs==="ask")return React.createElement("div",{style:{textAlign:"center",padding:"36px 20px"}},
+    React.createElement("div",{style:{fontSize:44,marginBottom:16}},"\u{1F4F8}"),
+    React.createElement("h2",{style:{fontSize:20,fontWeight:700,marginBottom:6}},"Camera Access"),
+    React.createElement("p",{style:{color:"var(--ts)",marginBottom:24,fontSize:14}},"We\u2019ll check your cube is scrambled, track it during the solve, and give AI-powered feedback after."),
+    React.createElement("button",{onClick:reqCam,style:{padding:"12px 28px",borderRadius:10,border:"none",fontSize:15,fontWeight:700,background:"var(--ab)",color:"#fff",cursor:"pointer"}},"Allow Camera"));
+  if(cs==="no")return React.createElement("div",{style:{textAlign:"center",padding:"36px 20px"}},
+    React.createElement("p",{style:{color:"var(--ts)",marginBottom:24}},"Camera denied. Enable in browser settings."));
+
+  // Colors
+  var sc=ph==="ready"||ph==="solving"?"#00E676":ph==="paused"?"#EF5350":ph==="analyzing"?"var(--ab)":"#FF9800";
+  var slbl=ph==="checking"?"Scanning":ph==="ready"?"Ready":ph==="solving"?"Tracking":ph==="paused"?"PAUSED":ph==="analyzing"?"Analyzing":ph==="stopped"?"Done":"";
+
+  return React.createElement("div",null,
+    React.createElement("canvas",{ref:canvRef,style:{display:"none"}}),
+    scramble&&scramble.length>0&&React.createElement("div",{style:{textAlign:"center",marginBottom:10,fontSize:12,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6,padding:"8px 12px",borderRadius:8,background:"var(--s2)"}},scramble.join("  ")),
+
+    // Camera
+    React.createElement("div",{style:{position:"relative",borderRadius:14,overflow:"hidden",border:"2px solid "+(ph==="solving"?"#EF5350":ph==="paused"?"#FF9800":"var(--bd)"),marginBottom:8,background:"#000",minHeight:200}},
+      React.createElement("video",{ref:vRef,autoPlay:true,playsInline:true,muted:true,style:{width:"100%",display:"block"}}),
+      ph==="checking"&&React.createElement("div",{style:{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:"50%",height:"55%",border:"3px dashed "+sc,borderRadius:10,pointerEvents:"none"}}),
+      React.createElement("div",{style:{position:"absolute",top:10,left:10,display:"flex",alignItems:"center",gap:5,background:"rgba(0,0,0,0.7)",padding:"5px 10px",borderRadius:16,fontSize:11,fontWeight:600,color:sc,fontFamily:"'JetBrains Mono',monospace"}},React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:sc,animation:ph==="solving"||ph==="analyzing"?"bk 1.5s infinite":"none"}}),slbl),
+      ph==="solving"&&React.createElement("div",{style:{position:"absolute",top:10,right:10,display:"flex",alignItems:"center",gap:5,background:"rgba(239,83,80,.9)",padding:"5px 10px",borderRadius:16,fontSize:11,fontWeight:700,color:"#fff",fontFamily:"'JetBrains Mono',monospace"}},React.createElement("div",{style:{width:7,height:7,borderRadius:"50%",background:"#fff",animation:"bk 1s infinite"}}),"REC"),
+      ph==="paused"&&React.createElement("div",{style:{position:"absolute",inset:0,background:"rgba(0,0,0,0.65)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}},React.createElement("div",{style:{fontSize:48,marginBottom:8}},"\u23F8\uFE0F"),React.createElement("div",{style:{color:"#FF9800",fontSize:18,fontWeight:700}},"TIMER PAUSED"),React.createElement("div",{style:{color:"#ccc",fontSize:13,marginTop:6}},"Show cube to camera to resume")),
+      (ph==="solving"||ph==="paused"||ph==="stopped"||ph==="analyzing")&&React.createElement("div",{style:{position:"absolute",bottom:12,left:"50%",transform:"translateX(-50%)",background:"rgba(0,0,0,0.75)",padding:"10px 28px",borderRadius:14,fontFamily:"'JetBrains Mono',monospace",fontSize:36,fontWeight:700,color:ph==="solving"?"#fff":ph==="paused"?"#FF9800":"var(--ab)"}},disp)),
+
+    // Status
+    React.createElement("div",{style:{textAlign:"center",padding:"8px 12px",marginBottom:12,fontSize:12,color:sc,fontFamily:"'JetBrains Mono',monospace",fontWeight:600}},msg),
+
+    // Buttons
+    React.createElement("div",{style:{textAlign:"center",marginBottom:18}},
+      ph==="checking"&&React.createElement("div",{style:{display:"flex",gap:12,justifyContent:"center"}},React.createElement("div",{style:{padding:"14px 32px",borderRadius:10,fontSize:14,fontWeight:600,background:"var(--s3)",color:"var(--tm)"}},"Detecting..."),React.createElement("button",{onClick:goBack,style:{padding:"14px 20px",borderRadius:10,border:"2px solid var(--bd)",fontSize:13,fontWeight:600,background:"transparent",color:"var(--ts)",cursor:"pointer"}},"Back")),
+      ph==="ready"&&React.createElement("button",{onClick:startSolve,style:{padding:"16px 48px",borderRadius:12,border:"none",fontSize:18,fontWeight:700,background:"#00E676",color:"#1a1a2e",cursor:"pointer",boxShadow:"0 4px 16px rgba(0,230,118,0.3)"}},"Start Solve \u{1F680}"),
+      (ph==="solving"||ph==="paused")&&React.createElement("button",{onClick:stopSolve,style:{padding:"14px 40px",borderRadius:10,border:"none",fontSize:16,fontWeight:700,background:"#EF5350",color:"#fff",cursor:"pointer"}},"Stop"),
+      ph==="analyzing"&&React.createElement("div",{style:{padding:"14px 40px",borderRadius:10,fontSize:14,fontWeight:600,background:"var(--s3)",color:"var(--ab)",animation:"bk 1.5s infinite"}},"AI analyzing..."),
+      ph==="stopped"&&recap&&React.createElement("div",{style:{display:"flex",gap:12,justifyContent:"center"}},React.createElement("button",{onClick:again,style:{padding:"14px 28px",borderRadius:10,border:"2px solid var(--bd)",fontSize:14,fontWeight:700,background:"transparent",color:"var(--ts)",cursor:"pointer"}},"Solve Again"),React.createElement("button",{onClick:saveNext,style:{padding:"14px 28px",borderRadius:10,border:"none",fontSize:14,fontWeight:700,background:"var(--ab)",color:"#fff",cursor:"pointer"}},"Save & Next \u2192"))),
+
+    // AI Recap
+    recap&&recap.ai&&React.createElement("div",{style:{background:"var(--s2)",borderRadius:14,padding:18,border:"1px solid var(--bd)",marginTop:4}},
+      React.createElement("div",{style:{textAlign:"center",marginBottom:16}},
+        React.createElement("div",{style:{fontSize:36,marginBottom:6}},recap.ai.emoji||"\u{1F4AA}"),
+        React.createElement("div",{style:{display:"inline-block",padding:"6px 16px",borderRadius:20,background:recap.ai.level==="Advanced"?"#00E676":recap.ai.level==="Intermediate+"?"#4d7cff":recap.ai.level==="Intermediate"?"#FFD500":"#FF9800",color:"#111",fontSize:14,fontWeight:700,marginBottom:8}},recap.ai.level||"Cuber"),
+        React.createElement("div",{style:{fontSize:13,color:"var(--ts)",lineHeight:1.6,maxWidth:420,margin:"0 auto"}},recap.ai.motivation)),
+      React.createElement("div",{style:{display:"flex",gap:8,marginBottom:16}},
+        React.createElement("div",{style:{flex:1,padding:"10px 8px",borderRadius:8,background:"var(--s3)",textAlign:"center"}},React.createElement("div",{style:{fontSize:10,color:"var(--tm)",marginBottom:3}},"Time"),React.createElement("div",{style:{fontSize:20,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--ab)"}},tf(recap.t))),
+        React.createElement("div",{style:{flex:1,padding:"10px 8px",borderRadius:8,background:"var(--s3)",textAlign:"center"}},React.createElement("div",{style:{fontSize:10,color:"var(--tm)",marginBottom:3}},"Efficiency"),React.createElement("div",{style:{fontSize:20,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:(recap.ai.efficiency||50)>80?"#00E676":(recap.ai.efficiency||50)>50?"#FFD500":"#FF9800"}},(recap.ai.efficiency||50)+"%")),
+        recap.pt>0&&React.createElement("div",{style:{flex:1,padding:"10px 8px",borderRadius:8,background:"rgba(239,83,80,0.1)",textAlign:"center"}},React.createElement("div",{style:{fontSize:10,color:"#EF5350",marginBottom:3}},"Paused"),React.createElement("div",{style:{fontSize:20,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"#EF5350"}},tf(recap.pt)))),
+      recap.ai.comparisonToWR&&React.createElement("div",{style:{padding:"10px 14px",borderRadius:8,background:"rgba(77,124,255,0.08)",border:"1px solid rgba(77,124,255,0.2)",marginBottom:12,fontSize:12,color:"var(--ts)",lineHeight:1.5}},"\u{1F3C6} "+recap.ai.comparisonToWR),
+      recap.ai.movementNote&&React.createElement("div",{style:{padding:"10px 14px",borderRadius:8,background:"rgba(255,152,0,0.08)",border:"1px solid rgba(255,152,0,0.2)",marginBottom:16,fontSize:12,color:"var(--ts)",lineHeight:1.5}},"\u{1F3AC} "+recap.ai.movementNote),
+      React.createElement("h4",{style:{fontSize:13,fontWeight:700,margin:"0 0 10px",color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace"}},"PHASE-BY-PHASE"),
+      [{l:"Cross",d:recap.ai.crossAnalysis,c:"#4d7cff"},{l:"F2L",d:recap.ai.f2lAnalysis,c:"#00A14B"},{l:"OLL",d:recap.ai.ollAnalysis,c:"#FFD500"},{l:"PLL",d:recap.ai.pllAnalysis,c:"#C8102E"}].map(function(p,i){if(!p.d)return null;return React.createElement("div",{key:i,style:{padding:"12px 14px",borderRadius:10,background:"var(--s3)",border:"1px solid var(--bd)",marginBottom:8}},React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}},React.createElement("span",{style:{fontSize:13,fontWeight:700,color:p.c}},p.l),React.createElement("span",{style:{fontSize:12,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:"var(--tp)"}},p.d.time||"")),React.createElement("div",{style:{fontSize:12,color:"var(--ts)",lineHeight:1.6}},p.d.feedback||""));}),
+      recap.ai.topTip&&React.createElement("div",{style:{padding:"12px 14px",borderRadius:10,background:"rgba(0,230,118,0.08)",border:"1px solid rgba(0,230,118,0.2)",margin:"12px 0"}},React.createElement("div",{style:{fontSize:11,fontWeight:700,color:"#00E676",marginBottom:4,fontFamily:"'JetBrains Mono',monospace"}},"\u{1F4A1} #1 TIP"),React.createElement("div",{style:{fontSize:13,color:"var(--ts)",lineHeight:1.6}},recap.ai.topTip)),
+      recap.ai.practiceplan&&React.createElement("div",null,React.createElement("h4",{style:{fontSize:13,fontWeight:700,margin:"8px 0 10px",color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace"}},"PRACTICE PLAN"),React.createElement("div",{style:{padding:"12px 14px",borderRadius:10,background:"var(--s3)"}},recap.ai.practiceplan.map(function(p,i){return React.createElement("div",{key:i,style:{padding:"6px 0",borderBottom:i<recap.ai.practiceplan.length-1?"1px solid var(--bd)":"none",fontSize:12,color:"var(--ts)",lineHeight:1.5}},p);})))),
+
+      !showOpt&&React.createElement("div",{style:{textAlign:"center",marginTop:16}},React.createElement("button",{onClick:function(){setShowOpt(true);},style:{padding:"14px 36px",borderRadius:12,border:"2px solid var(--ab)",fontSize:14,fontWeight:700,background:"var(--abd)",color:"var(--ab)",cursor:"pointer"}},"See Optimal Solve \u{1F50D}")),
+      showOpt&&React.createElement("div",{style:{marginTop:16}},React.createElement("h4",{style:{fontSize:13,fontWeight:700,margin:"0 0 8px",color:"var(--ab)",fontFamily:"'JetBrains Mono',monospace"}},"OPTIMAL SOLUTION ("+optimalSolve.length+" MOVES)"),React.createElement("p",{style:{fontSize:12,color:"var(--ts)",marginBottom:12}},"Watch the cube solve itself! Each move is grouped into solve phases."),React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,marginBottom:12}},React.createElement("span",{style:{fontSize:10,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace"}},"Speed"),React.createElement("input",{type:"range",min:"0.3",max:"3",step:"0.1",value:optSpeed,onChange:function(e){setOptSpeed(parseFloat(e.target.value));},style:{flex:1,accentColor:"var(--ab)",height:3}}),React.createElement("span",{style:{fontSize:10,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace",width:34,textAlign:"right"}},optSpeed.toFixed(1)+"s")),React.createElement("div",{style:{background:"var(--sf)",borderRadius:14,border:"1px solid var(--bd)",overflow:"hidden"}},React.createElement(SolvePlayer,{scramble:scramble,solution:optimalSolve,speed:optSpeed,cubeType:cubeType,phases:(function(){var n=optimalSolve.length;if(cubeType==="2x2"){var pbl=Math.ceil(n*0.35),oll=Math.ceil(n*0.30),first=n-pbl-oll;return[{name:"Undo PBL",color:"#C8102E",count:pbl},{name:"Undo OLL",color:"#FFD500",count:oll},{name:"Undo First Layer",color:"#00A14B",count:first}];}var pll=Math.ceil(n*0.2),oll3=Math.ceil(n*0.2),f2l=Math.ceil(n*0.48),cross=n-pll-oll3-f2l;return[{name:"Undo PLL",color:"#C8102E",count:pll},{name:"Undo OLL",color:"#FFD500",count:oll3},{name:"Undo F2L",color:"#00A14B",count:f2l},{name:"Undo Cross",color:"#4d7cff",count:cross}];})()})),React.createElement("div",{style:{display:"flex",gap:6,marginTop:10}},(cubeType==="2x2"?[{n:"PBL",c:"#C8102E"},{n:"OLL",c:"#FFD500"},{n:"1st Layer",c:"#00A14B"}]:[{n:"PLL",c:"#C8102E"},{n:"OLL",c:"#FFD500"},{n:"F2L",c:"#00A14B"},{n:"Cross",c:"#4d7cff"}]).map(function(ph2,i){return React.createElement("div",{key:i,style:{flex:1,display:"flex",alignItems:"center",gap:4,justifyContent:"center"}},React.createElement("div",{style:{width:8,height:8,borderRadius:2,background:ph2.c}}),React.createElement("span",{style:{fontSize:10,color:"var(--ts)"}},ph2.n));})),React.createElement("div",{style:{textAlign:"center",marginTop:12}},React.createElement("button",{onClick:function(){setShowOpt(false);},style:{padding:"8px 20px",borderRadius:8,border:"1px solid var(--bd)",fontSize:12,background:"transparent",color:"var(--ts)",cursor:"pointer"}},"Hide"))),
+    React.createElement("style",null,"@keyframes bk{0%,100%{opacity:1}50%{opacity:.3}}"));
+}
+function ContactSection(){
+  var _fb=useState(""),feedback=_fb[0],setFeedback=_fb[1];
+  var _status=useState(""),status=_status[0],setStatus=_status[1];
+  var _sub=useState(false),submitting=_sub[0],setSubmitting=_sub[1];
+  var submitFeedback=async function(){
+    var txt=feedback.trim();
+    if(!txt){setStatus("Please enter your feedback first.");return;}
+    if(window.location.protocol==="file:"){
+      setStatus("Direct send will not work from a local HTML file preview. Open CubeFlow through a web server or deploy it, then submit once to activate email delivery.");
+      return;
+    }
+    setSubmitting(true);
+    setStatus("Sending feedback...");
+    try{
+      var data=new FormData();
+      data.append("message",txt);
+      data.append("_subject","CubeFlow Feedback");
+      data.append("_template","table");
+      data.append("_honey","");
+      if(/^https?:/i.test(window.location.href)) data.append("_url",window.location.href);
+      var res=await fetch("https://formsubmit.co/ajax/cubeflowfeedback@gmail.com",{method:"POST",body:data,headers:{Accept:"application/json"}});
+      var json=await res.json().catch(function(){return null;});
+      if(!res.ok||(json&&json.success===false)){
+        throw new Error(json&&json.message?json.message:"Could not send feedback right now.");
+      }
+      setFeedback("");
+      setStatus("Thanks! Feedback submitted. If this is the first live submission, check the inbox for the activation email.");
+    }catch(err){
+      setStatus((err&&err.message?err.message:"Could not send feedback right now.")+" Make sure the site is opened through http/https, then check the inbox and spam folder for FormSubmit activation.");
+    }finally{
+      setSubmitting(false);
+    }
+  };
+  return React.createElement("section",{style:{marginTop:24,padding:"18px",borderRadius:16,background:"var(--s2)",border:"1px solid var(--bd)",boxShadow:"0 10px 24px rgba(0,0,0,0.08)"}},
+    React.createElement("div",{style:{fontSize:24,marginBottom:8}},"✉️"),
+    React.createElement("h2",{style:{fontSize:20,fontWeight:700,marginBottom:6}},"Contact Us"),
+    React.createElement("p",{style:{fontSize:13,color:"var(--ts)",lineHeight:1.6,marginBottom:14}},"Share feedback, ideas, or bugs. "),
+    React.createElement("textarea",{value:feedback,onChange:function(e){setFeedback(e.target.value);if(status)setStatus("");},placeholder:"Tell us what you think about CubeFlow...",rows:5,disabled:submitting,style:{width:"100%",resize:"vertical",padding:"12px 14px",borderRadius:12,border:"1px solid var(--bd)",background:"var(--sf)",color:"var(--tp)",fontFamily:"inherit",fontSize:14,lineHeight:1.5,outline:"none",marginBottom:12,opacity:submitting?0.75:1}}),
+    React.createElement("div",{style:{display:"flex",flexWrap:"wrap",alignItems:"center",gap:12}},
+      React.createElement("button",{onClick:submitFeedback,disabled:submitting,style:{padding:"12px 20px",borderRadius:12,border:"none",background:submitting?"#7f8db8":"var(--ab)",color:"#fff",fontSize:14,fontWeight:700,cursor:submitting?"not-allowed":"pointer",opacity:submitting?0.85:1}},submitting?"Sending...":"Submit Feedback"),
+      React.createElement("span",{style:{fontSize:12,color:status==="Please enter your feedback first."?"#EF5350":"var(--tm)",maxWidth:360,lineHeight:1.5}},status)));
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MAIN APP
+══════════════════════════════════════════════════════════════ */
+function App(){
+  var _th=useState("dark"),theme=_th[0],setTheme=_th[1];var _dv=useState(null),dev=_dv[0],setDev=_dv[1];
+  var _ev=useState("3x3"),eventKey=_ev[0],setEventKey=_ev[1];
+  var _sc=useState("home"),scr=_sc[0],setScr=_sc[1];var _md=useState(null),mode=_md[0],setMode=_md[1];
+  var _scm=useState([]),scramble=_scm[0],setScramble=_scm[1];var _sp=useState(2.5),spd=_sp[0],setSpd=_sp[1];
+  var _sm=useState({}),sm=_sm[0],setSm=_sm[1];
+  var _se=useState([{id:"3x3-s1",name:"Session 1",event:"3x3"},{id:"2x2-s1",name:"Session 1",event:"2x2"}]),sess=_se[0],setSess=_se[1];
+  var _as=useState({"3x3":"3x3-s1","2x2":"2x2-s1"}),activeSess=_as[0],setActiveSess=_as[1];
+  var _ss=useState({"3x3-s1":[],"2x2-s1":[]}),ss=_ss[0],setSs=_ss[1];var _lt=useState(null),lastTime=_lt[0],setLastTime=_lt[1];
+  var _scrStep=useState(0),scrStep=_scrStep[0],setScrStep=_scrStep[1];
+  var scrDone=scrStep>=scramble.length&&scramble.length>0;
+  var eventModeKey=eventKey+":"+mode;
+  var visibleSess=useMemo(function(){return sess.filter(function(s){return s.event===eventKey;});},[sess,eventKey]);
+  var activeSessionId=activeSess[eventKey]||((visibleSess[0]&&visibleSess[0].id)||null);
+  var cur=useMemo(function(){return mode==="competitive"?(ss[activeSessionId]||[]):(sm[eventModeKey]||[]);},[mode,sm,ss,activeSessionId,eventModeKey]);
+  function scrLen(m){if(eventKey==="2x2")return m==="competitive"?11:m==="fun"?9:10;return m==="competitive"?25:m==="fun"?15:20;}
+  var ns=useCallback(function(){setScramble(genScr(scrLen(mode),eventKey));},[mode,eventKey]);
+  var enter=function(m){setMode(m);if(m==="algorithms")setScr("algorithms");else if(m==="records")setScr("records");else{setScramble(genScr(scrLen(m),eventKey));setScr("scramble");}};
+  var onSolve=useCallback(function(t){if(t===-1){ns();setScr("scramble");return;}var s={id:Date.now(),t:t,scr:scramble.slice(),p:null,event:eventKey};if(mode==="competitive")setSs(function(p){var o={};for(var k in p)o[k]=p[k];o[activeSessionId]=(p[activeSessionId]||[]).concat([s]);return o;});setSm(function(p){var o={};for(var k in p)o[k]=p[k];o[eventModeKey]=(p[eventModeKey]||[]).concat([s]);return o;});setLastTime(t);setScr("result");},[mode,scramble,activeSessionId,eventModeKey,eventKey,ns]);
+  var onP=function(i,pen){var up=function(l){var n=l.slice();n[i]=Object.assign({},n[i],{p:n[i].p===pen?null:pen});return n;};if(mode==="competitive")setSs(function(p){var o={};for(var k in p)o[k]=p[k];o[activeSessionId]=up(p[activeSessionId]||[]);return o;});setSm(function(p){var o={};for(var k in p)o[k]=p[k];o[eventModeKey]=up(p[eventModeKey]||[]);return o;});};
+  var onD=function(i){var up=function(l){return l.filter(function(_,j){return j!==i;});};if(mode==="competitive")setSs(function(p){var o={};for(var k in p)o[k]=p[k];o[activeSessionId]=up(p[activeSessionId]||[]);return o;});setSm(function(p){var o={};for(var k in p)o[k]=p[k];o[eventModeKey]=up(p[eventModeKey]||[]);return o;});};
+  var addSess=function(){var id=eventKey+"-s"+Date.now(),nm="Session "+(visibleSess.length+1);setSess(function(p){return p.concat([{id:id,name:nm,event:eventKey}]);});setSs(function(p){var o={};for(var k in p)o[k]=p[k];o[id]=[];return o;});setActiveSess(function(p){var o={};for(var k in p)o[k]=p[k];o[eventKey]=id;return o;});};
+  var ms=function(k){var s=sm[eventKey+":"+k]||[];return{b:tf(bst(s)),a5:tf(aoN(s,5)),a12:tf(aoN(s,12))};};
+  var dk=theme==="dark";
+  var tv={"--bg":dk?"#06061a":"#f2f2fa","--sf":dk?"#0e0e28":"#fff","--s2":dk?"#161642":"#efeffa","--s3":dk?"#202055":"#e4e4f0","--bd":dk?"#262660":"#cccce0","--tp":dk?"#e8e8f4":"#1a1a30","--ts":dk?"#9898c0":"#555575","--tm":dk?"#505078":"#8888a8","--ab":"#4d7cff","--abd":dk?"rgba(77,124,255,.1)":"rgba(61,108,229,.07)","--ag":"#00E676","--cf":dk?"linear-gradient(135deg,#0e1d38,#091426)":"linear-gradient(135deg,#e0ecff,#ccdcff)","--cc":dk?"linear-gradient(135deg,#1e0e38,#140926)":"linear-gradient(135deg,#ece0ff,#deccff)","--ct":dk?"linear-gradient(135deg,#0e381e,#092614)":"linear-gradient(135deg,#e0ffe8,#ccffd8)","--ca":dk?"linear-gradient(135deg,#2a1a0e,#1a100a)":"linear-gradient(135deg,#fff0e0,#ffe0cc)","--cr":dk?"linear-gradient(135deg,#0e2a2a,#0a1a1a)":"linear-gradient(135deg,#e0ffff,#ccffff)"};
+  var fontLink=React.createElement("link",{href:"https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap",rel:"stylesheet"});
+
+  /* DEVICE SELECT */
+  if(!dev)return React.createElement("div",{style:Object.assign({},tv,{minHeight:"100vh",background:"var(--bg)",color:"var(--tp)",fontFamily:"'DM Sans',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24})},fontLink,
+    React.createElement("div",{style:{width:"100%",maxWidth:560,marginBottom:14,textAlign:"center",transform:"translateY(-34px)"}},
+      React.createElement("div",{style:{fontSize:24,fontWeight:800,marginBottom:8,color:"var(--tp)",textShadow:dk?"0 6px 20px rgba(77,124,255,.28)":"0 4px 14px rgba(77,124,255,.18)"}},"Welcome to CubeFlow!"),
+      React.createElement("p",{style:{color:"var(--tp)",fontSize:14,lineHeight:1.65,marginBottom:8,maxWidth:540,marginLeft:"auto",marginRight:"auto"}},"Made by a cube fan to help friends learn, practice, and get faster at cubing. Whether you’re just starting or already solving fast, CubeFlow is here to make learning fun."),
+      React.createElement("div",{style:{fontWeight:800,fontSize:15,color:"var(--ab)"}},"Learn, solve, improve — and have fun cubing!")),
+    React.createElement("h1",{style:{fontSize:32,fontWeight:700,marginBottom:4,background:"linear-gradient(135deg,var(--ab),#a855f7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}},"CubeFlow"),
+    React.createElement("p",{style:{color:"var(--ts)",marginBottom:32,fontSize:14}},"What device are you using?"),
+    React.createElement("div",{style:{display:"flex",gap:14,width:"100%",maxWidth:380}},[["📱","Phone","phone"],["💻","Computer","laptop"]].map(function(a){return React.createElement("button",{key:a[2],onClick:function(){setDev(a[2]);},style:{flex:1,padding:"24px 16px",borderRadius:14,border:"2px solid var(--bd)",background:"var(--sf)",cursor:"pointer",textAlign:"center"}},React.createElement("div",{style:{fontSize:32,marginBottom:8}},a[0]),React.createElement("div",{style:{fontSize:16,fontWeight:700,color:"var(--tp)"}},a[1]));})),
+    React.createElement("button",{onClick:function(){setTheme(function(t){return t==="dark"?"light":"dark";});},style:{marginTop:28,background:"var(--s2)",border:"none",color:"var(--ts)",padding:"7px 14px",borderRadius:8,cursor:"pointer",fontSize:13}},dk?"☀️ Light":"🌙 Dark"));
+
+  /* HEADER */
+  var header=React.createElement("header",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",borderBottom:"1px solid var(--bd)"}},
+    React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},
+      scr!=="home"&&React.createElement("button",{onClick:function(){if(scr==="timer")setScr("scramble");else if(scr==="result"){ns();setScr("scramble");}else{setScr("home");setMode(null);}},style:{background:"var(--s2)",border:"none",color:"var(--ts)",padding:"5px 9px",borderRadius:7,cursor:"pointer",fontSize:12,fontWeight:600}},"\u2190"),
+      React.createElement("span",{style:{fontSize:16,fontWeight:700,background:"linear-gradient(135deg,var(--ab),#a855f7)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}},"CubeFlow")),
+    React.createElement("div",{style:{display:"flex",gap:6}},
+      React.createElement("button",{onClick:function(){setDev(null);},style:{background:"var(--s2)",border:"none",color:"var(--tm)",padding:"5px 8px",borderRadius:7,cursor:"pointer",fontSize:11}},dev==="phone"?"📱":"💻"),
+      React.createElement("button",{onClick:function(){setTheme(function(t){return t==="dark"?"light":"dark";});},style:{background:"var(--s2)",border:"none",color:"var(--ts)",padding:"5px 10px",borderRadius:7,cursor:"pointer",fontSize:13}},dk?"☀️":"🌙")));
+
+  /* PAGES */
+  var content=null;
+
+  if(scr==="home"){
+    var cards=[{k:"fun",l:"For Fun",i:"🎮",d:"No pressure, just solve",g:"var(--cf)"},{k:"competitive",l:"Competitive",i:"🏆",d:"WCA inspection, penalties, sessions",g:"var(--cc)"},{k:"training",l:"Training",i:"🧠",d:"Camera-assisted solve analysis",g:"var(--ct)"},{k:"algorithms",l:"Algorithms",i:"📖",d:eventKey==="2x2"?"Learn Ortega, CLL, and PBL":"Learn OLL, PLL, and F2L",g:"var(--ca)"},{k:"records",l:"World Records",i:"🌍",d:"Latest WCA world records",g:"var(--cr)"}];
+    var eventButtons=[["3x3","3×3×3"],["2x2","2×2×2"]].map(function(opt){return React.createElement("button",{key:opt[0],onClick:function(){setEventKey(opt[0]);},style:{flex:1,padding:"10px 12px",borderRadius:12,border:"1.5px solid "+(eventKey===opt[0]?"var(--ab)":"var(--bd)"),background:eventKey===opt[0]?"var(--abd)":"var(--s2)",color:eventKey===opt[0]?"var(--ab)":"var(--tp)",fontWeight:700,cursor:"pointer"}},opt[1]);});
+    content=React.createElement("div",null,
+      React.createElement("h2",{style:{fontSize:22,fontWeight:700,marginBottom:4}},"Choose your cube"),
+      React.createElement("p",{style:{color:"var(--ts)",marginBottom:12,fontSize:13}},"Pick 3x3 or 2x2 first, then choose a mode."),
+      React.createElement("div",{style:{display:"flex",gap:10,marginBottom:18}},eventButtons),
+      React.createElement("h2",{style:{fontSize:22,fontWeight:700,marginBottom:4}},"Choose your mode"),
+      React.createElement("p",{style:{color:"var(--ts)",marginBottom:12,fontSize:13}},eventKey==="2x2"?"2x2 times and sessions stay separate from 3x3.":"Pick a mode and start solving"),
+      cards.map(function(m){var showStats=m.k==="fun"||m.k==="competitive"||m.k==="training";var s=showStats?ms(m.k):null;
+        return React.createElement("button",{key:m.k,onClick:function(){enter(m.k);},style:{display:"block",width:"100%",padding:"16px 18px",marginBottom:12,borderRadius:14,border:"1px solid var(--bd)",background:m.g,cursor:"pointer",textAlign:"left"}},
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}},
+            React.createElement("div",null,React.createElement("div",{style:{fontSize:22,marginBottom:4}},m.i),React.createElement("div",{style:{fontSize:17,fontWeight:700,color:"var(--tp)",marginBottom:2}},m.l),React.createElement("div",{style:{fontSize:11,color:"var(--ts)"}},m.d)),
+            s&&React.createElement("div",{style:{display:"flex",gap:12,fontFamily:"'JetBrains Mono',monospace",fontSize:10}},[["best",s.b,"var(--ag)"],["ao5",s.a5,"var(--tp)"],["ao12",s.a12,"var(--tp)"]].map(function(x){return React.createElement("div",{key:x[0],style:{textAlign:"center"}},React.createElement("div",{style:{color:"var(--tm)",marginBottom:1}},x[0]),React.createElement("div",{style:{color:x[2],fontWeight:700}},x[1]));}))));}));
+  }
+  else if(scr==="scramble"&&mode){
+    var sessBar=null;
+    if(mode==="competitive"){var sb=visibleSess.map(function(s){return React.createElement("button",{key:s.id,onClick:function(){setActiveSess(function(p){var o={};for(var k in p)o[k]=p[k];o[eventKey]=s.id;return o;});},style:{padding:"4px 10px",borderRadius:16,border:"2px solid",borderColor:s.id===activeSessionId?"var(--ab)":"var(--bd)",background:s.id===activeSessionId?"var(--abd)":"transparent",color:s.id===activeSessionId?"var(--ab)":"var(--ts)",fontSize:10,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap",fontFamily:"'JetBrains Mono',monospace"}},s.name);});sb.push(React.createElement("button",{key:"add",onClick:addSess,style:{width:24,height:24,borderRadius:"50%",border:"2px dashed var(--bd)",background:"transparent",color:"var(--tm)",fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}},"+"));sessBar=React.createElement("div",{style:{display:"flex",alignItems:"center",gap:6,overflowX:"auto",marginBottom:10}},sb);}
+    content=React.createElement("div",null,
+      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}},
+        React.createElement("h2",{style:{fontSize:15,fontWeight:700,margin:0}},(eventKey==="2x2"?"🧊 2x2 ":"🧩 3x3 ")+(mode==="fun"?"For Fun":mode==="competitive"?"Competitive":"Training")),
+        React.createElement("div",{style:{display:"flex",gap:5}},React.createElement("button",{onClick:ns,style:{padding:"8px 18px",borderRadius:10,border:"none",background:"linear-gradient(135deg,var(--ab),#7c5cff)",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",boxShadow:"0 2px 8px rgba(77,124,255,0.25)"}},"New Scramble \u{1F504}"))),
+      sessBar,
+      React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,padding:"7px 12px",borderRadius:8,background:"var(--s2)",marginBottom:10}},React.createElement("span",{style:{fontSize:10,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace"}},"Speed"),React.createElement("input",{type:"range",min:"0.1",max:"4",step:"0.05",value:spd,onChange:function(e){setSpd(parseFloat(e.target.value));},style:{flex:1,accentColor:"var(--ab)",height:3}}),React.createElement("span",{style:{fontSize:10,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace",width:34,textAlign:"right"}},spd.toFixed(2)+"s")),
+      React.createElement("div",{style:{background:"var(--sf)",borderRadius:14,border:"1px solid var(--bd)",overflow:"hidden"}},React.createElement(ScramblePlayer,{scramble:scramble,speed:spd,onStepChange:setScrStep,cubeType:eventKey})),
+      React.createElement("button",{onClick:function(){if(scrDone)setScr("timer");},disabled:!scrDone,style:{display:"block",width:"100%",padding:14,marginTop:16,borderRadius:12,border:"none",fontSize:16,fontWeight:700,background:scrDone?"linear-gradient(135deg,var(--ab),#7c5cff)":"var(--s3)",color:scrDone?"#fff":"var(--tm)",cursor:scrDone?"pointer":"not-allowed",opacity:scrDone?1:0.5}},scrDone?"Ready to Solve \u2192":"Complete scramble first"));
+  }
+  else if(scr==="timer"&&mode){
+    if(mode==="training"){
+      content=React.createElement("div",null,React.createElement(CamTrain,{onSolve:onSolve,scramble:scramble,dev:dev,inspection:false,cubeType:eventKey}),React.createElement(Solves,{solves:cur,onP:onP,onD:onD}));
+    } else {
+      content=React.createElement("div",null,React.createElement("div",{style:{textAlign:"center",marginBottom:6,fontSize:11,color:"var(--tm)",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6}},scramble.join("  ")),dev==="phone"?React.createElement(G5Timer,{onSolve:onSolve,inspection:mode==="competitive"}):React.createElement(KBTimer,{onSolve:onSolve,inspection:mode==="competitive"}),React.createElement(Solves,{solves:cur,onP:onP,onD:onD}));
+    }
+  }
+  else if(scr==="result"&&lastTime!=null){content=React.createElement(SolveResult,{time:lastTime,onNext:function(){ns();setScr("scramble");}});}
+  else if(scr==="algorithms"){content=React.createElement(AlgorithmsPage,{eventKey:eventKey});}
+  else if(scr==="records"){content=React.createElement(WorldRecords,null);}
+
+  return React.createElement("div",{style:Object.assign({},tv,{minHeight:"100vh",background:"var(--bg)",color:"var(--tp)",fontFamily:"'DM Sans',sans-serif"})},fontLink,header,React.createElement("main",{style:{maxWidth:580,margin:"0 auto",padding:"16px 14px"}},content,React.createElement(ContactSection,null)));
+}
+ReactDOM.render(React.createElement(App),document.getElementById("root"));</script></body></html>
